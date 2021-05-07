@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import textwrap
 from typing import Any, Dict, Tuple
+import uuid
 
 import libvirt
 
@@ -16,53 +18,147 @@ class InvalidAttachmentNotFound(_routing.ClientError):
     code = "InvalidAttachment.NotFound"
 
 
+class InvalidVolumeNotFound(_routing.ClientError):
+
+    code = "InvalidVolume.NotFound"
+
+
 _known_attachments: Dict[Tuple[str, str], Tuple[str, str]] = {}
+
+
+@_routing.handler("CreateVolume")
+async def create_volume(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    pool: libvirt.virStoragePool = app['libvirt_pool']
+    size = args.get("Size")
+    if not size:
+        raise _routing.InvalidParameterError(
+            "missing required Size")
+
+    az = args.get("AvailabilityZone")
+    if not az:
+        raise _routing.InvalidParameterError(
+            "missing required AvailabilityZone")
+
+    voltype = args.get("VolumeType")
+    if not voltype:
+        voltype = "gp2"
+
+    volname = f'{uuid.uuid4()}.qcow2'
+
+    xml = textwrap.dedent(f"""\
+    <volume type='file'>
+        <name>{volname}</name>
+        <capacity unit="G">{size}</capacity>
+        <target>
+            <path>{volname}</path>
+            <format type='qcow2'/>
+            <compat>1.1</compat>
+        </target>
+    </volume>""")
+
+    pool.createXML(
+        xml,
+        flags=libvirt.VIR_STORAGE_VOL_CREATE_PREALLOC_METADATA
+    )
+
+    create_time = datetime.datetime.now(datetime.timezone.utc)
+
+    tags = {}
+    tag_spec = args.get("TagSpecification")
+    if tag_spec:
+        for spec_entry in tag_spec:
+            tag_entries = spec_entry["Tag"]
+            for tag in tag_entries:
+                tags[tag["Key"]] = tag["Value"]
+
+    if tags:
+        cur = app["db"].cursor()
+        cur.executemany(
+            """
+                INSERT INTO volume_tags (volname, tagname, tagvalue)
+                VALUES (?, ?, ?)
+            """,
+            [[volname, n, v] for n, v in tags.items()],
+        )
+        app["db"].commit()
+
+    return {
+        "volumeId": volname,
+        "size": size,
+        "iops": 10000,
+        "availabilityZone": az,
+        "snapshotId": None,
+        "status": "creating",
+        "createTime": create_time.strftime("%Y-%m-%dT%H:%M:%S.%f000Z"),
+        "volumeType": voltype,
+        "tagSet": [{"key": k, "value": v} for k, v in tags.items()],
+        "multiAttachEnabled": "false",
+    }
+
+
+@_routing.handler("DeleteVolume")
+async def delete_volume(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    pool: libvirt.virStoragePool = app['libvirt_pool']
+    volname = args.get("VolumeId")
+    if not volname:
+        raise _routing.InvalidParameterError(
+            "missing required VolumeId")
+
+    try:
+        vol = pool.storageVolLookupByName(volname)
+    except libvirt.libvirtError as e:
+        raise InvalidVolumeNotFound(e.args[0]) from None
+
+    vol.delete()
+
+    return {
+        "return": "true",
+    }
 
 
 @_routing.handler("DescribeVolumes")
 async def describe_volumes(
     args: _routing.HandlerArgs,
-    pool: libvirt.virStoragePool,
+    app: _routing.App,
 ) -> Dict[str, Any]:
+    pool: libvirt.virStoragePool = app['libvirt_pool']
     volume_ids = set(args.get('VolumeId', ()))
     result = []
+    filters = args.get("Filter")
+    if filters:
+        filtered_volume_ids = set()
+        for flt in filters:
+            if flt["Name"].startswith("tag:"):
+                tagname = flt["Name"][len("tag:")]
+                tagvalue = flt["Value"]
+
+                cur = app["db"].cursor()
+                cur.execute(f"""
+                    SELECT volname FROM volume_tags
+                    WHERE tagname = ?
+                    AND tagvalue IN ({",".join(["?"] * len(tagvalue))})
+                """, [tagname] + list(tagvalue))
+                filtered_volume_ids.update(cur.fetchall())
+                cur.close()
+            else:
+                raise _routing.InvalidParameterError(
+                    f"unsupported filter type: {flt['Name']}")
+
+        if volume_ids:
+            volume_ids -= filtered_volume_ids
+        else:
+            volume_ids = filtered_volume_ids
 
     for volume in objects.get_all_volumes(pool):
         volname = volume.name
-        if not volume_ids or volname in volume_ids:
-            attachments = objects.get_vol_attachments(pool, volume)
-            existing = {(att.volume, att.domain) for att in attachments}
-
-            att_set = []
-            for att in attachments:
-                att_set.append({
-                    "instanceId": att.domain,
-                    "volumeId": att.volume,
-                    "device": f"/dev/{att.device}",
-                    "status": get_attachment_status(att),
-                })
-
-            for (vol, dom), (device, status) in _known_attachments.items():
-                if (vol, dom) not in existing and vol == volname:
-                    att_set.append({
-                        "instanceId": dom,
-                        "volumeId": vol,
-                        "device": f"/dev/{device}",
-                        "status": status,
-                    })
-
-            if all(att["status"] == "detached" for att in att_set):
-                status = "available"
-            else:
-                status = "in-use"
-
-            result.append({
-                "volumeId": volname,
-                "volumeType": "standard",
-                "size": volume.capacity // 1073741824,
-                "status": status,
-                "attachmentSet": att_set,
-            })
+        if (not volume_ids and not filters) or volname in volume_ids:
+            result.append(_describe_volume(pool, volume))
 
     return {
         "volumeSet": result,
@@ -72,8 +168,9 @@ async def describe_volumes(
 @_routing.handler("AttachVolume")
 async def attach_volume(
     args: _routing.HandlerArgs,
-    pool: libvirt.virStoragePool,
+    app: _routing.App,
 ) -> Dict[str, Any]:
+    pool: libvirt.virStoragePool = app['libvirt_pool']
     instance_id = args.get("InstanceId")
     if not instance_id:
         raise _routing.InvalidParameterError("missing required InstanceId")
@@ -151,8 +248,9 @@ async def attach_volume(
 @_routing.handler("DetachVolume")
 async def detach_volume(
     args: _routing.HandlerArgs,
-    pool: libvirt.virStoragePool,
+    app: _routing.App,
 ) -> Dict[str, Any]:
+    pool: libvirt.virStoragePool = app['libvirt_pool']
     instance_id = args.get("InstanceId")
     if not instance_id:
         raise _routing.InvalidParameterError("missing required InstanceId")
@@ -257,3 +355,43 @@ def _get_volume_status(
         status = "in-use"
 
     return status
+
+
+def _describe_volume(
+    pool: libvirt.virStoragePool,
+    volume: objects.Volume,
+) -> Dict[str, Any]:
+
+    attachments = objects.get_vol_attachments(pool, volume)
+    existing = {(att.volume, att.domain) for att in attachments}
+
+    att_set = []
+    for att in attachments:
+        att_set.append({
+            "instanceId": att.domain,
+            "volumeId": att.volume,
+            "device": f"/dev/{att.device}",
+            "status": get_attachment_status(att),
+        })
+
+    for (vol, dom), (device, status) in _known_attachments.items():
+        if (vol, dom) not in existing and vol == volume.name:
+            att_set.append({
+                "instanceId": dom,
+                "volumeId": vol,
+                "device": f"/dev/{device}",
+                "status": status,
+            })
+
+    if all(att["status"] == "detached" for att in att_set):
+        status = "available"
+    else:
+        status = "in-use"
+
+    return {
+        "volumeId": volume.name,
+        "volumeType": "standard",
+        "size": volume.capacity // 1073741824,
+        "status": status,
+        "attachmentSet": att_set,
+    }

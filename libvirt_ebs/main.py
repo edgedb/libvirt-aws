@@ -5,6 +5,7 @@ import aiohttp.log
 import click
 import libvirt
 import logging
+import sqlite3
 from typing import Any, Mapping
 
 from . import handlers
@@ -45,12 +46,27 @@ class AccessLogger(aiohttp.web_log.AccessLogger):
             self.logger.exception("Error in logging")
 
 
-def init_app(pool: str, libvirt_uri: str) -> web.Application:
+def init_db(db: sqlite3.Connection) -> None:
+    cur = db.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS volume_tags (
+            volname text,
+            tagname text,
+            tagvalue text,
+            UNIQUE (volname, tagname)
+        )
+    ''')
+    db.commit()
+
+
+def init_app(pool: str, libvirt_uri: str, database: str) -> web.Application:
     app = web.Application()
     # logging.basicConfig(level=logging.DEBUG)
     aiohttp.log.access_logger.setLevel(logging.DEBUG)
     app['libvirt'] = libvirt.open(libvirt_uri)
     app['libvirt_pool'] = app['libvirt'].storagePoolLookupByName(pool)
+    app['db'] = sqlite3.connect(database)
+    init_db(app['db'])
     app.add_routes([
         web.post("/", handlers.handle_request),
         web.get("/", handlers.handle_request),
@@ -70,8 +86,9 @@ async def close_libvirt(app: web.Application) -> None:
 @click.command()
 @click.option('--pool', default='default', help='Image pool to use')
 @click.option('--libvirt-uri', default='qemu:///system', help='Libvirtd URI')
-def main(*, pool: str, libvirt_uri: str) -> None:
+@click.option('--database', default='pool.db', help='Path to sqlite db')
+def main(*, pool: str, libvirt_uri: str, database: str) -> None:
     web.run_app(
-        init_app(pool=pool, libvirt_uri=libvirt_uri),
+        init_app(pool=pool, libvirt_uri=libvirt_uri, database=database),
         access_log_class=AccessLogger,
     )

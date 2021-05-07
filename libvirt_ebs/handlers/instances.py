@@ -13,8 +13,9 @@ from . import volumes
 @_routing.handler("DescribeInstances")
 async def describe_instances(
     args: _routing.HandlerArgs,
-    pool: libvirt.virStoragePool,
+    app: _routing.App,
 ) -> Dict[str, Any]:
+    pool: libvirt.virStoragePool = app['libvirt_pool']
     instance_ids = set(args.get('InstanceId', ()))
     result = []
 

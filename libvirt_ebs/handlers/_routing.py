@@ -30,6 +30,8 @@ _HandlerType = Callable[
 ]
 _handlers: Dict[Tuple[str, str], _HandlerType] = {}
 
+App = web.Application
+
 
 def format_xml_response(
     data: Mapping[str, Any],
@@ -115,6 +117,15 @@ class InternalServerError(ServerError):
     code = "InternalError"
 
 
+class SparseList(list):
+
+  def __setitem__(self, index, value):
+        gap = index - len(self) + 1
+        if gap > 0:
+            self.extend([None] * gap)
+        super().__setitem__(index, value)
+
+
 def handler(
     action: str,
     methods: Iterable[str] = frozenset({'GET', 'POST'}),
@@ -156,8 +167,7 @@ async def handle_request(request: web.Request) -> web.StreamResponse:
             f"The action {action} is not valid for this web service."
         )
     else:
-        cleaned_data: Dict[str, Union[str, Tuple[str, ...]]] = {}
-        lists: Dict[str, List[Tuple[int, str]]] = collections.defaultdict(list)
+        args: Dict[str, Any] = {}
 
         for k, v in data.items():
             if not isinstance(v, str):
@@ -166,24 +176,35 @@ async def handle_request(request: web.Request) -> web.StreamResponse:
                     f"must be a string."
                 )
 
-            if m := re.match(r"^(.*)\.(\d+)$", k):
-                listname = m.group(1)
-                index = int(m.group(2))
-                lists[listname].append((index, v))
+            path = k.split('.')
+            path_len = len(path)
+            if path_len == 1:
+                args[k] = v
             else:
-                cleaned_data[k] = v
+                i = 0
+                ptr = args
+                while i < path_len:
+                    subkey = path[i]
+                    if subkey.isnumeric():
+                        subkey = int(subkey) - 1
+                    i += 1
+                    try:
+                        ptr = ptr[subkey]
+                    except (KeyError, IndexError):
+                        if i == path_len:
+                            ptr[subkey] = v
+                            break
+                        elif path[i].isnumeric():
+                            ptr[subkey] = SparseList()
+                        else:
+                            ptr[subkey] = {}
 
-        for k, l in lists.items():
-            l.sort(key=lambda v: v[0])
-            cleaned_data[k] = tuple(v[1] for v in l)
+                        ptr = ptr[subkey]
 
         try:
-            result = await handler(
-                cleaned_data,
-                request.app['libvirt_pool'],
-            )
+            result = await handler(args, request.app)
             result["RequestID"] = str(uuid.uuid4())
-            version = cleaned_data.get("Version")
+            version = args.get("Version")
             text = format_xml_response(
                 result,
                 root=f"{action}Response",

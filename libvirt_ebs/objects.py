@@ -12,6 +12,19 @@ import libvirt
 import xmltodict
 
 
+def get_volume(
+    pool: libvirt.virStoragePool,
+    name: str
+) -> Volume:
+
+    for virvol in pool.listAllVolumes():
+        vol = volume_from_xml(virvol.XMLDesc(0))
+        if vol.name == name:
+            return vol
+
+    raise LookupError(f'volume {name} does not exist')
+
+
 def get_all_volumes(
     pool: libvirt.virStoragePool,
 ) -> List[Volume]:

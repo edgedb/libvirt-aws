@@ -37,3 +37,4 @@ tests/dumps/**/*_dev*.dump
 /.vagga
 /.dmypy.json
 /compile_commands.json
+/pool.db
