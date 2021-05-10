@@ -7,9 +7,9 @@ setup(
     ],
     use_scm_version=True,
     name='libvirt-ebs',
-    description='Amazon EBS-compatible API server for libvirt',
-    author='EdgeDB Inc.',
-    author_email='hello@edgedb.com',
+    description='Amazon EBS-compatible API server powered by libvirt',
+    author='Elvis Pranskevichus',
+    author_email='elvis@edgedb.com',
     packages=['libvirt_ebs'],
     include_package_data=True,
     entry_points={
