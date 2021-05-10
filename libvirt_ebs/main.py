@@ -6,7 +6,7 @@ import click
 import libvirt
 import logging
 import sqlite3
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from . import handlers
 
@@ -84,11 +84,22 @@ async def close_libvirt(app: web.Application) -> None:
 
 
 @click.command()
+@click.option('--bind-to', default=None, type=str, help='Address to listen on')
+@click.option('--port', default=9100, type=int, help='TCP port to listen on')
 @click.option('--pool', default='default', help='Image pool to use')
 @click.option('--libvirt-uri', default='qemu:///system', help='Libvirtd URI')
 @click.option('--database', default='pool.db', help='Path to sqlite db')
-def main(*, pool: str, libvirt_uri: str, database: str) -> None:
+def main(
+    *,
+    bind_to: Optional[str],
+    port: int,
+    pool: str,
+    libvirt_uri: str,
+    database: str,
+) -> None:
     web.run_app(
         init_app(pool=pool, libvirt_uri=libvirt_uri, database=database),
         access_log_class=AccessLogger,
+        host=bind_to,
+        port=port,
     )
