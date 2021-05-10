@@ -21,7 +21,7 @@ setup(
         'aiohttp~=3.7.0',
         'click~=7.1',
         'dicttoxml~=1.7.4',
-        'libvirt-python~=7.2.0',
+        'libvirt-python>=6.0.0,<8.0.0',
         'xmltodict~=0.12.0',
     ],
 )
