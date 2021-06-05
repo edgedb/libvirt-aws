@@ -84,9 +84,12 @@ class Domain:
     @property
     def disks(self) -> List[DiskDevice]:
         if self._disks is None:
+            disks = self._dom["devices"]["disk"]
+            if not isinstance(disks, list):
+                disks = [disks]
             self._disks = [
                 DiskDevice(self, d)
-                for d in self._dom["devices"]["disk"]
+                for d in disks
                 if d["@type"] == "volume"
             ]
 
