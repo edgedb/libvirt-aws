@@ -262,6 +262,8 @@ async def detach_volume(
     if not isinstance(volume_id, str):
         raise _routing.InvalidParameterError("invalid VolumeId value")
 
+    key = (volume_id, instance_id)
+
     conn = pool.connect()
     try:
         virdom = conn.lookupByName(instance_id)
@@ -283,8 +285,18 @@ async def detach_volume(
             break
 
     if device is None:
-        raise InvalidAttachmentNotFound(
-            f"Volume {volume_id} is not attached to Instance {instance_id}")
+        known = _known_attachments.get(key)
+        if not known or known[1] != "detaching":
+            raise InvalidAttachmentNotFound(
+                f"Volume {volume_id} is not attached to Instance {instance_id}"
+            )
+        else:
+            return {
+                "volumeId": volume_id,
+                "instanceId": instance_id,
+                "status": known[1],
+                "device": f'/dev/{known[0]}',
+            }
 
     xml = textwrap.dedent(f"""\
     <disk type='volume' device='disk'>
@@ -301,7 +313,6 @@ async def detach_volume(
     # Give the detachment time to settle.  Alas, there seems to be
     # no obvious way to actually verify the status of the device in the
     # target VM.
-    key = (volume_id, instance_id)
     dev = device
     _known_attachments[key] = (dev, "detaching")
     def _mark_detached() -> None:
