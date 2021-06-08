@@ -39,7 +39,7 @@ async def describe_instances(
 
             recent_atts = volumes.get_known_attachments()
             for (vol, dom), (device, status) in recent_atts.items():
-                if (vol, dom) not in existing:
+                if (vol, dom) not in existing and status != "detached":
                     block_devices.append({
                         "deviceName": f"/dev/{device}",
                         "ebs": {
