@@ -344,7 +344,7 @@ def _get_volume_status(
         })
 
     for (vol, dom), (_, status) in _known_attachments.items():
-        if (vol, dom) not in existing:
+        if (vol, dom) not in existing and vol == volume.name:
             att_set.append({
                 "status": status,
             })
