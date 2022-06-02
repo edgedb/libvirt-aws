@@ -1,0 +1,11 @@
+[tool.black]
+line-length = 79
+target-version = ["py39"]
+
+[tool.mypy]
+files = "libvirt_aws"
+python_version = "3.9"
+follow_imports = "normal"
+ignore_missing_imports = true
+show_error_codes = true
+strict = true

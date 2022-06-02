@@ -72,7 +72,7 @@ def init_db(db: sqlite3.Connection) -> None:
 
 def init_app(
     pool: str,
-    elastic_ip_net: str,
+    network: str,
     libvirt_uri: str,
     database: str,
 ) -> web.Application:
@@ -81,7 +81,7 @@ def init_app(
     aiohttp.log.access_logger.setLevel(logging.DEBUG)
     app['libvirt'] = libvirt.open(libvirt_uri)
     app['libvirt_pool'] = app['libvirt'].storagePoolLookupByName(pool)
-    app['libvirt_net'] = app['libvirt'].networkLookupByName(elastic_ip_net)
+    app['libvirt_net'] = app['libvirt'].networkLookupByName(network)
     app['db'] = sqlite3.connect(database)
     app['logger'] = logging.getLogger("libvirt-aws")
     init_db(app['db'])
@@ -104,24 +104,25 @@ async def close_libvirt(app: web.Application) -> None:
 @click.command()
 @click.option('--bind-to', default=None, type=str, help='Address to listen on')
 @click.option('--port', default=5100, type=int, help='TCP port to listen on')
-@click.option('--pool', default='default', help='Image pool to use')
-@click.option('--elastic-ip-net', default='default',
-              help='Name of libvirt network to use to allocate Elastic IPs')
 @click.option('--libvirt-uri', default='qemu:///system', help='Libvirtd URI')
 @click.option('--database', default='pool.db', help='Path to sqlite db')
+@click.option('--libvirt-image-pool', default='default',
+              help='Name of libvirt image pool to use for EBS emulation.')
+@click.option('--libvirt-network', default='default',
+              help='Name of libvirt network to use for EIP emulation.')
 def main(
     *,
     bind_to: Optional[str],
     port: int,
-    pool: str,
-    elastic_ip_net: str,
+    libvirt_image_pool: str,
+    libvirt_network: str,
     libvirt_uri: str,
     database: str,
 ) -> None:
     web.run_app(
         init_app(
-            pool=pool,
-            elastic_ip_net=elastic_ip_net,
+            pool=libvirt_image_pool,
+            network=libvirt_network,
             libvirt_uri=libvirt_uri,
             database=database,
         ),
