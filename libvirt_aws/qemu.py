@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import (
     Any,
+    Dict,
     Mapping,
     List,
     Optional,
@@ -69,7 +70,7 @@ async def agent_exec(
     result = await agent_command(domain, command)
     pid = result["pid"]
 
-    async def _loop():
+    async def _loop() -> RemoteProcess:
         while True:
             command = {
                 "execute": "guest-exec-status",
@@ -92,7 +93,10 @@ async def agent_exec(
     return await asyncio.wait_for(_loop(), timeout=timeout_sec)
 
 
-async def agent_command(domain: libvirt.virDomain, command: str) -> str:
+async def agent_command(
+    domain: libvirt.virDomain,
+    command: Dict[str, Any],
+) -> Dict[str, Any]:
     loop = asyncio.get_running_loop()
     resp = await loop.run_in_executor(
         None,
@@ -102,4 +106,4 @@ async def agent_command(domain: libvirt.virDomain, command: str) -> str:
         -1,
         0,
     )
-    return json.loads(resp)["return"]
+    return json.loads(resp)["return"]  # type: ignore [no-any-return]
