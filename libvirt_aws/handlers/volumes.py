@@ -32,24 +32,25 @@ async def create_volume(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> Dict[str, Any]:
-    pool: libvirt.virStoragePool = app['libvirt_pool']
+    pool: libvirt.virStoragePool = app["libvirt_pool"]
     size = args.get("Size")
     if not size:
-        raise _routing.InvalidParameterError(
-            "missing required Size")
+        raise _routing.InvalidParameterError("missing required Size")
 
     az = args.get("AvailabilityZone")
     if not az:
         raise _routing.InvalidParameterError(
-            "missing required AvailabilityZone")
+            "missing required AvailabilityZone"
+        )
 
     voltype = args.get("VolumeType")
     if not voltype:
         voltype = "gp2"
 
-    volname = f'{uuid.uuid4()}.qcow2'
+    volname = f"{uuid.uuid4()}.qcow2"
 
-    xml = textwrap.dedent(f"""\
+    xml = textwrap.dedent(
+        f"""\
     <volume type='file'>
         <name>{volname}</name>
         <capacity unit="G">{size}</capacity>
@@ -58,12 +59,10 @@ async def create_volume(
             <format type='qcow2'/>
             <compat>1.1</compat>
         </target>
-    </volume>""")
-
-    pool.createXML(
-        xml,
-        flags=libvirt.VIR_STORAGE_VOL_CREATE_PREALLOC_METADATA
+    </volume>"""
     )
+
+    pool.createXML(xml, flags=libvirt.VIR_STORAGE_VOL_CREATE_PREALLOC_METADATA)
 
     create_time = datetime.datetime.now(datetime.timezone.utc)
 
@@ -106,11 +105,10 @@ async def delete_volume(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> Dict[str, Any]:
-    pool: libvirt.virStoragePool = app['libvirt_pool']
+    pool: libvirt.virStoragePool = app["libvirt_pool"]
     volname = args.get("VolumeId")
     if not volname:
-        raise _routing.InvalidParameterError(
-            "missing required VolumeId")
+        raise _routing.InvalidParameterError("missing required VolumeId")
 
     try:
         vol = pool.storageVolLookupByName(volname)
@@ -129,8 +127,8 @@ async def describe_volumes(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> Dict[str, Any]:
-    pool: libvirt.virStoragePool = app['libvirt_pool']
-    volume_ids = set(args.get('VolumeId', ()))
+    pool: libvirt.virStoragePool = app["libvirt_pool"]
+    volume_ids = set(args.get("VolumeId", ()))
     result = []
     filters = args.get("Filter")
     if filters:
@@ -141,16 +139,20 @@ async def describe_volumes(
                 tagvalue = flt["Value"]
 
                 cur = app["db"].cursor()
-                cur.execute(f"""
+                cur.execute(
+                    f"""
                     SELECT resource_name FROM tags
                     WHERE tagname = ? AND resource_type = 'volume'
                     AND tagvalue IN ({",".join(["?"] * len(tagvalue))})
-                """, [tagname] + list(tagvalue))
+                """,
+                    [tagname] + list(tagvalue),
+                )
                 filtered_volume_ids.update(cur.fetchall())
                 cur.close()
             else:
                 raise _routing.InvalidParameterError(
-                    f"unsupported filter type: {flt['Name']}")
+                    f"unsupported filter type: {flt['Name']}"
+                )
 
         if volume_ids:
             volume_ids -= filtered_volume_ids
@@ -172,7 +174,7 @@ async def attach_volume(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> Dict[str, Any]:
-    pool: libvirt.virStoragePool = app['libvirt_pool']
+    pool: libvirt.virStoragePool = app["libvirt_pool"]
     instance_id = args.get("InstanceId")
     if not instance_id:
         raise _routing.InvalidParameterError("missing required InstanceId")
@@ -189,11 +191,12 @@ async def attach_volume(
     if not isinstance(volume_id, str):
         raise _routing.InvalidParameterError("invalid VolumeId value")
 
-    if device.startswith('/'):
-        if not device.startswith('/dev/'):
+    if device.startswith("/"):
+        if not device.startswith("/dev/"):
             raise _routing.InvalidParameterError(
-                "invalid Device, must start with /dev")
-        device = device[len('/dev/'):]
+                "invalid Device, must start with /dev"
+            )
+        device = device[len("/dev/") :]
 
     conn = pool.connect()
     try:
@@ -213,13 +216,15 @@ async def attach_volume(
             f"Volume {volume.name} is in use and cannot be attached."
         )
 
-    xml = textwrap.dedent(f"""\
+    xml = textwrap.dedent(
+        f"""\
     <disk type='volume' device='disk'>
         <driver name='qemu' type='qcow2'/>
         <source pool='{pool.name()}' volume='{volume_id}' />
         <target dev='{device}' bus='virtio'/>
         <serial>lvirtebs-{device}</serial>
-    </disk>""")
+    </disk>"""
+    )
 
     try:
         virdom.attachDevice(xml)
@@ -238,12 +243,13 @@ async def attach_volume(
 
     def _mark_attached() -> None:
         _known_attachments[key] = (dev, "attached")
+
     asyncio.get_running_loop().call_later(3, _mark_attached)
 
     return {
         "volumeId": volume_id,
         "instanceId": instance_id,
-        "device": f'/dev/{device}',
+        "device": f"/dev/{device}",
         "status": "attaching",
     }
 
@@ -253,7 +259,7 @@ async def detach_volume(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> Dict[str, Any]:
-    pool: libvirt.virStoragePool = app['libvirt_pool']
+    pool: libvirt.virStoragePool = app["libvirt_pool"]
     instance_id = args.get("InstanceId")
     if not instance_id:
         raise _routing.InvalidParameterError("missing required InstanceId")
@@ -272,7 +278,8 @@ async def detach_volume(
         virdom = conn.lookupByName(instance_id)
     except libvirt.libvirtError as e:
         raise errors.InvalidInstanceID_NotFound(
-            f"invalid InstanceId: {e}") from e
+            f"invalid InstanceId: {e}"
+        ) from e
 
     try:
         virvol = pool.storageVolLookupByName(volume_id)
@@ -299,15 +306,17 @@ async def detach_volume(
                 "volumeId": volume_id,
                 "instanceId": instance_id,
                 "status": known[1],
-                "device": f'/dev/{known[0]}',
+                "device": f"/dev/{known[0]}",
             }
 
-    xml = textwrap.dedent(f"""\
+    xml = textwrap.dedent(
+        f"""\
     <disk type='volume' device='disk'>
         <driver name='qemu' type='qcow2'/>
         <source pool='{pool.name()}' volume='{volume_id}' />
         <target dev='{device}' bus='virtio'/>
-    </disk>""")
+    </disk>"""
+    )
 
     try:
         virdom.detachDevice(xml)
@@ -329,7 +338,7 @@ async def detach_volume(
         "volumeId": volume_id,
         "instanceId": instance_id,
         "status": "detaching",
-        "device": f'/dev/{device}',
+        "device": f"/dev/{device}",
     }
 
 
@@ -355,15 +364,19 @@ def _get_volume_status(
 
     att_set = []
     for att in attachments:
-        att_set.append({
-            "status": get_attachment_status(att),
-        })
+        att_set.append(
+            {
+                "status": get_attachment_status(att),
+            }
+        )
 
     for (vol, dom), (_, status) in _known_attachments.items():
         if (vol, dom) not in existing and vol == volume.name:
-            att_set.append({
-                "status": status,
-            })
+            att_set.append(
+                {
+                    "status": status,
+                }
+            )
 
     if all(att["status"] == "detached" for att in att_set):
         status = "available"
@@ -383,21 +396,25 @@ def _describe_volume(
 
     att_set = []
     for att in attachments:
-        att_set.append({
-            "instanceId": att.domain,
-            "volumeId": att.volume,
-            "device": f"/dev/{att.device}",
-            "status": get_attachment_status(att),
-        })
+        att_set.append(
+            {
+                "instanceId": att.domain,
+                "volumeId": att.volume,
+                "device": f"/dev/{att.device}",
+                "status": get_attachment_status(att),
+            }
+        )
 
     for (vol, dom), (device, status) in _known_attachments.items():
         if (vol, dom) not in existing and vol == volume.name:
-            att_set.append({
-                "instanceId": dom,
-                "volumeId": vol,
-                "device": f"/dev/{device}",
-                "status": status,
-            })
+            att_set.append(
+                {
+                    "instanceId": dom,
+                    "volumeId": vol,
+                    "device": f"/dev/{device}",
+                    "status": status,
+                }
+            )
 
     if all(att["status"] == "detached" for att in att_set):
         status = "available"

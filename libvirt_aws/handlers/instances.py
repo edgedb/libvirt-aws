@@ -15,8 +15,8 @@ async def describe_instances(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> Dict[str, Any]:
-    pool: libvirt.virStoragePool = app['libvirt_pool']
-    instance_ids = set(args.get('InstanceId', ()))
+    pool: libvirt.virStoragePool = app["libvirt_pool"]
+    instance_ids = set(args.get("InstanceId", ()))
     result = []
 
     for domain in objects.get_all_domains(pool.connect()):
@@ -28,36 +28,44 @@ async def describe_instances(
                 if disk.pool != pool.name():
                     continue
                 att = disk.attachment
-                block_devices.append({
-                    "deviceName": f"/dev/{att.device}",
-                    "ebs": {
-                        "volumeId": att.volume,
-                        "status": volumes.get_attachment_status(att),
-                    },
-                })
+                block_devices.append(
+                    {
+                        "deviceName": f"/dev/{att.device}",
+                        "ebs": {
+                            "volumeId": att.volume,
+                            "status": volumes.get_attachment_status(att),
+                        },
+                    }
+                )
                 existing.add((att.volume, att.domain))
 
             recent_atts = volumes.get_known_attachments()
             for (vol, dom), (device, status) in recent_atts.items():
                 if (vol, dom) not in existing and status != "detached":
-                    block_devices.append({
-                        "deviceName": f"/dev/{device}",
-                        "ebs": {
-                            "volumeId": vol,
-                            "status": status,
-                        },
-                    })
+                    block_devices.append(
+                        {
+                            "deviceName": f"/dev/{device}",
+                            "ebs": {
+                                "volumeId": vol,
+                                "status": status,
+                            },
+                        }
+                    )
 
-            result.append({
-                "instanceId": domname,
-                "instanceType": "t2.micro",
-                "blockDeviceMapping": block_devices,
-            })
+            result.append(
+                {
+                    "instanceId": domname,
+                    "instanceType": "t2.micro",
+                    "blockDeviceMapping": block_devices,
+                }
+            )
 
     return {
-        "reservationSet": [{
-            "reservationId": "dummy",
-            "ownerId": "dummy",
-            "instancesSet": result,
-        }]
+        "reservationSet": [
+            {
+                "reservationId": "dummy",
+                "ownerId": "dummy",
+                "instancesSet": result,
+            }
+        ]
     }

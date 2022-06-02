@@ -13,17 +13,14 @@ import libvirt
 import xmltodict
 
 
-def get_volume(
-    pool: libvirt.virStoragePool,
-    name: str
-) -> Volume:
+def get_volume(pool: libvirt.virStoragePool, name: str) -> Volume:
 
     for virvol in pool.listAllVolumes():
         vol = volume_from_xml(virvol.XMLDesc(0))
         if vol.name == name:
             return vol
 
-    raise LookupError(f'volume {name} does not exist')
+    raise LookupError(f"volume {name} does not exist")
 
 
 def get_all_volumes(
@@ -73,7 +70,6 @@ def domain_from_xml(xml: str) -> Domain:
 
 
 class Domain:
-
     def __init__(self, dom: Mapping[str, Any]) -> None:
         self._dom = dom
         self._disks: Optional[List[DiskDevice]] = None
@@ -89,16 +85,13 @@ class Domain:
             if not isinstance(disks, list):
                 disks = [disks]
             self._disks = [
-                DiskDevice(self, d)
-                for d in disks
-                if d["@type"] == "volume"
+                DiskDevice(self, d) for d in disks if d["@type"] == "volume"
             ]
 
         return self._disks
 
 
 class DiskDevice:
-
     def __init__(self, dom: Domain, desc: Mapping[str, Any]) -> None:
         self._dom = dom
         self._desc = desc
@@ -127,7 +120,6 @@ def volume_from_xml(xml: str) -> Volume:
 
 
 class Volume:
-
     def __init__(self, volxml: str) -> None:
         parsed = xmltodict.parse(volxml)
         self._vol = parsed["volume"]
@@ -158,7 +150,6 @@ class Volume:
 
 
 class VolumeAttachment:
-
     def __init__(
         self,
         domain: str,
@@ -194,7 +185,6 @@ def network_from_xml(xml: str) -> Network:
 
 
 class Network:
-
     def __init__(self, netxml: str) -> None:
         parsed = xmltodict.parse(netxml)
         self._net = parsed["network"]

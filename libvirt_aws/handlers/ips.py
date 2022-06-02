@@ -64,7 +64,8 @@ async def describe_addresses(
                 assoc_ids.append(flt["Value"])
             else:
                 raise _routing.InvalidParameterError(
-                    f"unsupported filter type: {flt['Name']}")
+                    f"unsupported filter type: {flt['Name']}"
+                )
 
     if requested_ips:
         requested_ips = frozenset(requested_ips) - frozenset(ips)
@@ -79,14 +80,10 @@ async def describe_addresses(
         )
         args.extend(requested_ips)
     if instances:
-        quals.append(
-            f"instance_id IN ({','.join(('?',) * len(instances))})"
-        )
+        quals.append(f"instance_id IN ({','.join(('?',) * len(instances))})")
         args.extend(instances)
     if alloc_ids:
-        quals.append(
-            f"allocation_id IN ({','.join(('?',) * len(alloc_ids))})"
-        )
+        quals.append(f"allocation_id IN ({','.join(('?',) * len(alloc_ids))})")
         args.extend(alloc_ids)
     if assoc_ids:
         quals.append(
@@ -120,22 +117,28 @@ async def describe_addresses(
         query += f" WHERE {' AND '.join(quals)}"
 
     cur = app["db"].cursor()
-    cur.execute(f"""
+    cur.execute(
+        f"""
         SELECT resource_name FROM tags
         WHERE tagname = ? AND resource_type = 'volume'
         AND tagvalue IN ({",".join(["?"] * len(tagvalue))})
-    """, [tagname] + list(tagvalue))
+    """,
+        [tagname] + list(tagvalue),
+    )
     addresses = cur.fetchall()
     cur.close()
 
     return {
-        "addressesSet": [{
-            "publicIp": addr[0],
-            "instanceId": addr[1],
-            "allocationId": addr[2],
-            "associationId": addr[3],
-            "domain": "vpc",
-        } for addr in addresses],
+        "addressesSet": [
+            {
+                "publicIp": addr[0],
+                "instanceId": addr[1],
+                "allocationId": addr[2],
+                "associationId": addr[3],
+                "domain": "vpc",
+            }
+            for addr in addresses
+        ],
     }
 
 
@@ -147,21 +150,25 @@ async def allocate_address(
     address = args.get("Address")
     if address:
         raise _routing.InvalidParameterError(
-            "claiming existing addresses is not supported")
+            "claiming existing addresses is not supported"
+        )
 
     domain = args.get("Domain")
     if domain and domain != "vpc":
         raise _routing.InvalidParameterError(
-            "standard domain is not supported")
+            "standard domain is not supported"
+        )
 
     cur = app["db"].cursor()
-    cur.execute(f"""
+    cur.execute(
+        f"""
         SELECT ip_address FROM ip_addresses
-    """)
+    """
+    )
     existing = {ipaddress.IPv4Address(row[0]) for row in cur.fetchall()}
     cur.close()
 
-    net = objects.network_from_xml(app['libvirt_net'].XMLDesc())
+    net = objects.network_from_xml(app["libvirt_net"].XMLDesc())
     ip_range_start, ip_range_end = net.static_ip_range
     for int_addr in range(int(ip_range_start), int(ip_range_end)):
         address = ipaddress.IPv4Address(int_addr)
@@ -169,7 +176,8 @@ async def allocate_address(
             break
     else:
         raise AddressLimitExceededError(
-            "libvirt network is out of static addresses")
+            "libvirt network is out of static addresses"
+        )
 
     tags = {}
     tag_spec = args.get("TagSpecification")
@@ -215,24 +223,23 @@ async def associate_address(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> Dict[str, Any]:
-    pool: libvirt.virStoragePool = app['libvirt_pool']
+    pool: libvirt.virStoragePool = app["libvirt_pool"]
 
     alloc_id = args.get("AllocationId")
     if not alloc_id:
-        raise _routing.InvalidParameterError(
-            "missing required AllocationId")
+        raise _routing.InvalidParameterError("missing required AllocationId")
 
     instance_id = args.get("InstanceId")
     if not alloc_id:
-        raise _routing.InvalidParameterError(
-            "missing required InstanceId")
+        raise _routing.InvalidParameterError("missing required InstanceId")
 
     vir_conn = pool.connect()
     try:
         new_virdom = vir_conn.lookupByName(instance_id)
     except libvirt.libvirtError as e:
         raise errors.InvalidInstanceID_NotFound(
-            f"invalid InstanceId: {e}") from e
+            f"invalid InstanceId: {e}"
+        ) from e
 
     assoc_id = f"eipassoc-{uuid.uuid4()}"
 
@@ -251,7 +258,8 @@ async def associate_address(
         row = cur.fetchone()
         if row is None:
             raise InvalidAddressID_NotFound(
-                "could not find address for specified AllocationId")
+                "could not find address for specified AllocationId"
+            )
 
         cur_instance_id, ip_address = row
 
@@ -305,12 +313,11 @@ async def disassociate_address(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> Dict[str, Any]:
-    pool: libvirt.virStoragePool = app['libvirt_pool']
+    pool: libvirt.virStoragePool = app["libvirt_pool"]
 
     assoc_id = args.get("AssociationId")
     if not assoc_id:
-        raise _routing.InvalidParameterError(
-            "missing required AssociationId")
+        raise _routing.InvalidParameterError("missing required AssociationId")
 
     db_conn = app["db"]
 
@@ -327,7 +334,8 @@ async def disassociate_address(
         row = cur.fetchone()
         if row is None:
             raise InvalidAssociationID_NotFound(
-                "could not find address for specified AssociationId")
+                "could not find address for specified AssociationId"
+            )
 
         cur_instance_id, ip_address = row
 

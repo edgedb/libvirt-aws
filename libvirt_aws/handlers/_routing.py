@@ -43,8 +43,8 @@ def format_xml_response(
         if xmlns is not None:
             rootxml = f'<{root} xmlns="{xmlns}">'
         else:
-            rootxml = f'<{root}>'
-        body = f'{rootxml}\n{body}\n</{root}>'
+            rootxml = f"<{root}>"
+        body = f"{rootxml}\n{body}\n</{root}>"
     return f'<?xml version="1.0" encoding="UTF-8"?>\n{body}'
 
 
@@ -59,24 +59,27 @@ class ServiceError(web.HTTPError):
         status_code: Optional[int] = None,
         **kwargs: Any,
     ) -> None:
-        text = format_xml_response({
-            "Response": {
-                "RequestID": str(uuid.uuid4()),
-                "Errors": {
-                    "Error": {
-                        "Code": self.code,
-                        "Message": msg,
+        text = format_xml_response(
+            {
+                "Response": {
+                    "RequestID": str(uuid.uuid4()),
+                    "Errors": {
+                        "Error": {
+                            "Code": self.code,
+                            "Message": msg,
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         if status_code is not None:
             self.status_code = status_code
 
         dom = minidom.parseString(text)
         aiohttp.log.access_logger.debug(
-            f"Error Response:\n\n{dom.toprettyxml()}")
-        super().__init__(text=text, content_type='text/xml', **kwargs)
+            f"Error Response:\n\n{dom.toprettyxml()}"
+        )
+        super().__init__(text=text, content_type="text/xml", **kwargs)
 
 
 class ClientError(ServiceError, web.HTTPBadRequest):
@@ -117,7 +120,6 @@ class InternalServerError(ServerError):
 
 
 class SparseList(list):
-
     def __setitem__(self, index, value):
         gap = index - len(self) + 1
         if gap > 0:
@@ -127,7 +129,7 @@ class SparseList(list):
 
 def handler(
     action: str,
-    methods: Iterable[str] = frozenset({'GET', 'POST'}),
+    methods: Iterable[str] = frozenset({"GET", "POST"}),
 ) -> Callable[[_HandlerType], _HandlerType]:
     def inner(handler: _HandlerType) -> _HandlerType:
         global _handlers
@@ -144,15 +146,15 @@ async def handle_request(request: web.Request) -> web.StreamResponse:
         multidict.MultiDictProxy[Union[str, bytes, web.FileField]],
     ]
 
-    if request.method == 'POST':
+    if request.method == "POST":
         data = await request.post()
-    elif request.method == 'GET':
+    elif request.method == "GET":
         data = request.query
     else:
         raise InvalidMethodError(
             f"Method Not Allowed: {request.method}",
             method=request.method,
-            allowed_methods=['GET', 'POST'],
+            allowed_methods=["GET", "POST"],
         )
 
     action = data.get("Action")
@@ -175,7 +177,7 @@ async def handle_request(request: web.Request) -> web.StreamResponse:
                     f"must be a string."
                 )
 
-            path = k.split('.')
+            path = k.split(".")
             path_len = len(path)
             if path_len == 1:
                 args[k] = v
@@ -209,12 +211,14 @@ async def handle_request(request: web.Request) -> web.StreamResponse:
                 root=f"{action}Response",
                 xmlns=(
                     f"http://ec2.amazonaws.com/doc/{version}/"
-                    if version else None
+                    if version
+                    else None
                 ),
             )
             dom = minidom.parseString(text)
             aiohttp.log.access_logger.debug(
-                f"Response:\n---------\n{dom.toprettyxml()}")
+                f"Response:\n---------\n{dom.toprettyxml()}"
+            )
             return web.Response(text=text, content_type="text/xml")
         except ServiceError:
             raise

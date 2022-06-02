@@ -12,7 +12,6 @@ from . import handlers
 
 
 class AccessLogger(aiohttp.web_log.AccessLogger):
-
     def log(
         self,
         request: web.BaseRequest,
@@ -48,7 +47,8 @@ class AccessLogger(aiohttp.web_log.AccessLogger):
 
 def init_db(db: sqlite3.Connection) -> None:
     with db:
-        db.execute("""
+        db.execute(
+            """
             CREATE TABLE IF NOT EXISTS tags (
                 resource_name text,
                 resource_type text,
@@ -56,8 +56,10 @@ def init_db(db: sqlite3.Connection) -> None:
                 tagvalue      text,
                 UNIQUE (resource_name, resource_type, tagname)
             );
-        """)
-        db.execute("""
+        """
+        )
+        db.execute(
+            """
             CREATE TABLE IF NOT EXISTS ip_addresses (
                 allocation_id  text,
                 ip_address     text,
@@ -67,7 +69,8 @@ def init_db(db: sqlite3.Connection) -> None:
                 UNIQUE (allocation_id),
                 UNIQUE (association_id)
             );
-        """)
+        """
+        )
 
 
 def init_app(
@@ -79,37 +82,45 @@ def init_app(
     app = web.Application()
     # logging.basicConfig(level=logging.DEBUG)
     aiohttp.log.access_logger.setLevel(logging.DEBUG)
-    app['libvirt'] = libvirt.open(libvirt_uri)
-    app['libvirt_pool'] = app['libvirt'].storagePoolLookupByName(pool)
-    app['libvirt_net'] = app['libvirt'].networkLookupByName(network)
-    app['db'] = sqlite3.connect(database)
-    app['logger'] = logging.getLogger("libvirt-aws")
-    init_db(app['db'])
-    app.add_routes([
-        web.post("/", handlers.handle_request),
-        web.get("/", handlers.handle_request),
-        web.put("/", handlers.handle_request),
-        web.patch("/", handlers.handle_request),
-        web.options("/", handlers.handle_request),
-        web.delete("/", handlers.handle_request),
-    ])
+    app["libvirt"] = libvirt.open(libvirt_uri)
+    app["libvirt_pool"] = app["libvirt"].storagePoolLookupByName(pool)
+    app["libvirt_net"] = app["libvirt"].networkLookupByName(network)
+    app["db"] = sqlite3.connect(database)
+    app["logger"] = logging.getLogger("libvirt-aws")
+    init_db(app["db"])
+    app.add_routes(
+        [
+            web.post("/", handlers.handle_request),
+            web.get("/", handlers.handle_request),
+            web.put("/", handlers.handle_request),
+            web.patch("/", handlers.handle_request),
+            web.options("/", handlers.handle_request),
+            web.delete("/", handlers.handle_request),
+        ]
+    )
     app.on_cleanup.append(close_libvirt)
     return app
 
 
 async def close_libvirt(app: web.Application) -> None:
-    app['libvirt'].close()
+    app["libvirt"].close()
 
 
 @click.command()
-@click.option('--bind-to', default=None, type=str, help='Address to listen on')
-@click.option('--port', default=5100, type=int, help='TCP port to listen on')
-@click.option('--libvirt-uri', default='qemu:///system', help='Libvirtd URI')
-@click.option('--database', default='pool.db', help='Path to sqlite db')
-@click.option('--libvirt-image-pool', default='default',
-              help='Name of libvirt image pool to use for EBS emulation.')
-@click.option('--libvirt-network', default='default',
-              help='Name of libvirt network to use for EIP emulation.')
+@click.option("--bind-to", default=None, type=str, help="Address to listen on")
+@click.option("--port", default=5100, type=int, help="TCP port to listen on")
+@click.option("--libvirt-uri", default="qemu:///system", help="Libvirtd URI")
+@click.option("--database", default="pool.db", help="Path to sqlite db")
+@click.option(
+    "--libvirt-image-pool",
+    default="default",
+    help="Name of libvirt image pool to use for EBS emulation.",
+)
+@click.option(
+    "--libvirt-network",
+    default="default",
+    help="Name of libvirt network to use for EIP emulation.",
+)
 def main(
     *,
     bind_to: Optional[str],
