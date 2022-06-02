@@ -47,25 +47,43 @@ class AccessLogger(aiohttp.web_log.AccessLogger):
 
 
 def init_db(db: sqlite3.Connection) -> None:
-    cur = db.cursor()
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS volume_tags (
-            volname text,
-            tagname text,
-            tagvalue text,
-            UNIQUE (volname, tagname)
-        )
-    ''')
-    db.commit()
+    with db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS tags (
+                resource_name text,
+                resource_type text,
+                tagname       text,
+                tagvalue      text,
+                UNIQUE (resource_name, resource_type, tagname)
+            );
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS ip_addresses (
+                allocation_id  text,
+                ip_address     text,
+                association_id text,
+                instance_id    text,
+                UNIQUE (ip_address),
+                UNIQUE (allocation_id),
+                UNIQUE (association_id)
+            );
+        """)
 
 
-def init_app(pool: str, libvirt_uri: str, database: str) -> web.Application:
+def init_app(
+    pool: str,
+    elastic_ip_net: str,
+    libvirt_uri: str,
+    database: str,
+) -> web.Application:
     app = web.Application()
     # logging.basicConfig(level=logging.DEBUG)
     aiohttp.log.access_logger.setLevel(logging.DEBUG)
     app['libvirt'] = libvirt.open(libvirt_uri)
     app['libvirt_pool'] = app['libvirt'].storagePoolLookupByName(pool)
+    app['libvirt_net'] = app['libvirt'].networkLookupByName(elastic_ip_net)
     app['db'] = sqlite3.connect(database)
+    app['logger'] = logging.getLogger("libvirt-aws")
     init_db(app['db'])
     app.add_routes([
         web.post("/", handlers.handle_request),
@@ -87,6 +105,8 @@ async def close_libvirt(app: web.Application) -> None:
 @click.option('--bind-to', default=None, type=str, help='Address to listen on')
 @click.option('--port', default=5100, type=int, help='TCP port to listen on')
 @click.option('--pool', default='default', help='Image pool to use')
+@click.option('--elastic-ip-net', default='default',
+              help='Name of libvirt network to use to allocate Elastic IPs')
 @click.option('--libvirt-uri', default='qemu:///system', help='Libvirtd URI')
 @click.option('--database', default='pool.db', help='Path to sqlite db')
 def main(
@@ -94,11 +114,17 @@ def main(
     bind_to: Optional[str],
     port: int,
     pool: str,
+    elastic_ip_net: str,
     libvirt_uri: str,
     database: str,
 ) -> None:
     web.run_app(
-        init_app(pool=pool, libvirt_uri=libvirt_uri, database=database),
+        init_app(
+            pool=pool,
+            elastic_ip_net=elastic_ip_net,
+            libvirt_uri=libvirt_uri,
+            database=database,
+        ),
         access_log_class=AccessLogger,
         host=bind_to,
         port=port,

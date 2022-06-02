@@ -1,14 +1,10 @@
 from __future__ import annotations
-
-import asyncio
-import textwrap
-from typing import Any, Dict, Tuple
-
-import libvirt
+from typing import (
+    Any,
+    Dict,
+)
 
 from . import _routing
-
-from .. import objects
 
 
 @_routing.handler("DescribeAvailabilityZones")

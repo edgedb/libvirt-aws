@@ -7,6 +7,7 @@ from typing import (
 )
 
 import functools
+import ipaddress
 
 import libvirt
 import xmltodict
@@ -185,3 +186,52 @@ class VolumeAttachment:
     @property
     def device(self) -> str:
         return self._desc["@dev"]  # type: ignore[no-any-return]
+
+
+@functools.lru_cache
+def network_from_xml(xml: str) -> Network:
+    return Network(xml)
+
+
+class Network:
+
+    def __init__(self, netxml: str) -> None:
+        parsed = xmltodict.parse(netxml)
+        self._net = parsed["network"]
+
+    @property
+    def ip_network(self) -> ipaddress.IPv4Network:
+        ip = self._net.get("ip")
+        if ip is None:
+            return ValueError("network does not define an IP block")
+        if ip["@family"] != "ipv4":
+            raise ValueError("network is not an IPv4 network")
+        return ipaddress.IPv4Network(
+            f"{ip['@address']}/{ip['@prefix']}",
+            strict=False,
+        )
+
+    @property
+    def static_ip_range(
+        self,
+    ) -> tuple[ipaddress.IPv4Address, ipaddress.IPv4Address]:
+        ip = self._net.get("ip")
+        if ip is None:
+            return ValueError("network does not define an IP block")
+        if ip["@family"] != "ipv4":
+            raise ValueError("network is not an IPv4 network")
+        dhcp = ip.get("dhcp")
+        if dhcp is None:
+            return ValueError("network does not define a DHCP block")
+        dhcpRange = dhcp.get("range")
+        if dhcpRange is None:
+            return ValueError("network does not define a DHCP range block")
+
+        ip_iter = self.ip_network.hosts()
+        next(ip_iter)
+        start = next(ip_iter)
+
+        return (
+            start,
+            ipaddress.IPv4Address(dhcpRange["@start"]),
+        )

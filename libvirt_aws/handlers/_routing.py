@@ -1,17 +1,16 @@
+from __future__ import annotations
 from typing import (
     Any,
     Awaitable,
     Callable,
     Dict,
     Iterable,
-    List,
     Mapping,
     Optional,
     Tuple,
     Union,
 )
-import collections
-import re
+
 import traceback
 import uuid
 from xml.dom import minidom
@@ -119,7 +118,7 @@ class InternalServerError(ServerError):
 
 class SparseList(list):
 
-  def __setitem__(self, index, value):
+    def __setitem__(self, index, value):
         gap = index - len(self) + 1
         if gap > 0:
             self.extend([None] * gap)

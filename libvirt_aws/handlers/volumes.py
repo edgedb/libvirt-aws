@@ -9,6 +9,7 @@ import uuid
 import libvirt
 
 from . import _routing
+from . import errors
 
 from .. import objects
 
@@ -78,10 +79,11 @@ async def create_volume(
         cur = app["db"].cursor()
         cur.executemany(
             """
-                INSERT INTO volume_tags (volname, tagname, tagvalue)
-                VALUES (?, ?, ?)
+                INSERT INTO tags
+                    (resource_name, resource_type, tagname, tagvalue)
+                VALUES (?, ?, ?, ?)
             """,
-            [[volname, n, v] for n, v in tags.items()],
+            [[volname, "volume", n, v] for n, v in tags.items()],
         )
         app["db"].commit()
 
@@ -140,8 +142,8 @@ async def describe_volumes(
 
                 cur = app["db"].cursor()
                 cur.execute(f"""
-                    SELECT volname FROM volume_tags
-                    WHERE tagname = ?
+                    SELECT resource_name FROM tags
+                    WHERE tagname = ? AND resource_type = 'volume'
                     AND tagvalue IN ({",".join(["?"] * len(tagvalue))})
                 """, [tagname] + list(tagvalue))
                 filtered_volume_ids.update(cur.fetchall())
@@ -233,6 +235,7 @@ async def attach_volume(
         if vol == volume_id and att_status == "detached":
             del _known_attachments[vol, dom]
     _known_attachments[key] = (dev, "attaching")
+
     def _mark_attached() -> None:
         _known_attachments[key] = (dev, "attached")
     asyncio.get_running_loop().call_later(3, _mark_attached)
@@ -268,12 +271,13 @@ async def detach_volume(
     try:
         virdom = conn.lookupByName(instance_id)
     except libvirt.libvirtError as e:
-        raise _routing.InvalidParameterError(f"invalid InstanceId: {e}") from e
+        raise errors.InvalidInstanceID_NotFound(
+            f"invalid InstanceId: {e}") from e
 
     try:
         virvol = pool.storageVolLookupByName(volume_id)
     except libvirt.libvirtError as e:
-        raise _routing.InvalidParameterError(f"invalid VolumeId: {e}") from e
+        raise InvalidVolumeNotFound(f"invalid VolumeId: {e}") from e
 
     volume = objects.volume_from_xml(virvol.XMLDesc(0))
 
@@ -315,6 +319,7 @@ async def detach_volume(
     # target VM.
     dev = device
     _known_attachments[key] = (dev, "detaching")
+
     def _mark_detached() -> None:
         _known_attachments[key] = (dev, "detached")
 
