@@ -6,6 +6,7 @@ from typing import (
     List,
 )
 
+import collections
 import itertools
 import ipaddress
 import json
@@ -131,6 +132,24 @@ async def describe_addresses(
         cur = app["db"].execute(query)
         addresses = cur.fetchall()
 
+        cur = app["db"].execute(
+            f"""
+                SELECT
+                    resource_name, tagname, tagvalue
+                FROM
+                    tags
+                WHERE
+                    resource_type = 'ip_address'
+                    AND resource_name IN (
+                        {','.join(('?',) * len(addresses))}
+                    )
+            """,
+            [addr[0] for addr in addresses],
+        )
+        addr_tags: Dict[str, Dict[str, str]] = collections.defaultdict(dict)
+        for tag in cur.fetchall():
+            addr_tags[tag[0]][tag[1]] = tag[2]
+
     return {
         "addressesSet": [
             {
@@ -139,6 +158,10 @@ async def describe_addresses(
                 "allocationId": addr[2],
                 "associationId": addr[3],
                 "domain": "vpc",
+                "tagSet": [
+                    {"key": k, "value": v}
+                    for k, v in addr_tags[addr[0]].items()
+                ],
             }
             for addr in addresses
         ],
@@ -199,7 +222,7 @@ async def allocate_address(
                     (resource_name, resource_type, tagname, tagvalue)
                 VALUES (?, ?, ?, ?)
             """,
-            [[address, "ip_address", n, v] for n, v in tags.items()],
+            [[str(address), "ip_address", n, v] for n, v in tags.items()],
         )
 
     allocation_id = f"eipalloc-{uuid.uuid4()}"
