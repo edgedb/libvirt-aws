@@ -1,1 +1,1 @@
-# libvirt-ebs: A simple EBS-compatible server powered by libvirt
+# libvirt-aws: Partial AWS API emulation powered by libvirt
