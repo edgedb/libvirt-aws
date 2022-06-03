@@ -6,6 +6,7 @@ from typing import (
     Dict,
     Generic,
     Iterable,
+    List,
     Mapping,
     Optional,
     Tuple,
@@ -117,7 +118,7 @@ class InternalServerError(ServerError):
 T = TypeVar("T")
 
 
-class SparseList(Generic[T], list[Optional[T]]):
+class SparseList(Generic[T], List[Optional[T]]):
     def __setitem__(self, index: int, value: T) -> None:  # type: ignore
         gap = index - len(self) + 1
         if gap > 0:
