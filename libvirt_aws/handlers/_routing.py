@@ -4,10 +4,12 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
+    Generic,
     Iterable,
     Mapping,
     Optional,
     Tuple,
+    TypeVar,
     Union,
 )
 
@@ -21,13 +23,6 @@ import dicttoxml
 import multidict
 import libvirt
 
-HandlerArgs = Dict[str, Union[str, Tuple[str, ...]]]
-
-_HandlerType = Callable[
-    [HandlerArgs, libvirt.virStoragePool],
-    Awaitable[Dict[str, Any]],
-]
-_handlers: Dict[Tuple[str, str], _HandlerType] = {}
 
 App = web.Application
 
@@ -119,12 +114,24 @@ class InternalServerError(ServerError):
     code = "InternalError"
 
 
-class SparseList(list):
-    def __setitem__(self, index, value):
+T = TypeVar("T")
+
+
+class SparseList(Generic[T], list[Optional[T]]):
+    def __setitem__(self, index: int, value: T) -> None:  # type: ignore
         gap = index - len(self) + 1
         if gap > 0:
             self.extend([None] * gap)
         super().__setitem__(index, value)
+
+
+HandlerArgs = Dict[str, Any]
+
+_HandlerType = Callable[
+    [HandlerArgs, libvirt.virStoragePool],
+    Awaitable[Dict[str, Any]],
+]
+_handlers: Dict[Tuple[str, str], _HandlerType] = {}
 
 
 def handler(
@@ -168,7 +175,7 @@ async def handle_request(request: web.Request) -> web.StreamResponse:
             f"The action {action} is not valid for this web service."
         )
     else:
-        args: Dict[str, Any] = {}
+        args: HandlerArgs = {}
 
         for k, v in data.items():
             if not isinstance(v, str):
@@ -183,11 +190,13 @@ async def handle_request(request: web.Request) -> web.StreamResponse:
                 args[k] = v
             else:
                 i = 0
-                ptr = args
+                ptr: Any = args
                 while i < path_len:
-                    subkey = path[i]
-                    if subkey.isnumeric():
-                        subkey = int(subkey) - 1
+                    subkey: str | int
+                    if path[i].isnumeric():
+                        subkey = int(path[i]) - 1
+                    else:
+                        subkey = path[i]
                     i += 1
                     try:
                         ptr = ptr[subkey]

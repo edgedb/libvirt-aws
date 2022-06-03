@@ -2,10 +2,13 @@ from __future__ import annotations
 from typing import (
     Any,
     Dict,
+    FrozenSet,
+    List,
 )
 
 import itertools
 import ipaddress
+import json
 import uuid
 
 import libvirt
@@ -49,6 +52,7 @@ async def describe_addresses(
     alloc_ids = []
     assoc_ids = []
     if filters:
+        assert isinstance(filters, list)
         for flt in filters:
             if flt["Name"].startswith("tag:"):
                 tagname = flt["Name"][len("tag:")]
@@ -67,29 +71,31 @@ async def describe_addresses(
                     f"unsupported filter type: {flt['Name']}"
                 )
 
+    requested_ip_set: FrozenSet[str]
+
     if requested_ips:
-        requested_ips = frozenset(requested_ips) - frozenset(ips)
+        requested_ip_set = frozenset(requested_ips) - frozenset(ips)
     elif ips:
-        requested_ips = frozenset(ips)
+        requested_ip_set = frozenset(ips)
 
     quals = []
-    args = []
+    qargs: List[Any] = []
     if requested_ips:
         quals.append(
-            f"ip_address IN ({','.join(('?',) * len(requested_ips))})"
+            f"ip_address IN ({','.join(('?',) * len(requested_ip_set))})"
         )
-        args.extend(requested_ips)
+        qargs.extend(requested_ip_set)
     if instances:
         quals.append(f"instance_id IN ({','.join(('?',) * len(instances))})")
-        args.extend(instances)
+        qargs.extend(instances)
     if alloc_ids:
         quals.append(f"allocation_id IN ({','.join(('?',) * len(alloc_ids))})")
-        args.extend(alloc_ids)
+        qargs.extend(alloc_ids)
     if assoc_ids:
         quals.append(
             f"association_id IN ({','.join(('?',) * len(assoc_ids))})"
         )
-        args.extend(assoc_ids)
+        qargs.extend(assoc_ids)
 
     if tags:
         quals.append(
@@ -102,7 +108,7 @@ async def describe_addresses(
                       )
             """
         )
-        args.extend(itertools.chain.from_iterable(tags))
+        qargs.extend(itertools.chain.from_iterable(tags))
 
     query = """
         SELECT
@@ -116,17 +122,9 @@ async def describe_addresses(
     if quals:
         query += f" WHERE {' AND '.join(quals)}"
 
-    cur = app["db"].cursor()
-    cur.execute(
-        f"""
-        SELECT resource_name FROM tags
-        WHERE tagname = ? AND resource_type = 'volume'
-        AND tagvalue IN ({",".join(["?"] * len(tagvalue))})
-    """,
-        [tagname] + list(tagvalue),
-    )
-    addresses = cur.fetchall()
-    cur.close()
+    with app["db"]:
+        cur = app["db"].execute(query)
+        addresses = cur.fetchall()
 
     return {
         "addressesSet": [
@@ -241,6 +239,8 @@ async def associate_address(
             f"invalid InstanceId: {e}"
         ) from e
 
+    net = objects.network_from_xml(app["libvirt_net"].XMLDesc())
+
     assoc_id = f"eipassoc-{uuid.uuid4()}"
 
     db_conn = app["db"]
@@ -272,20 +272,22 @@ async def associate_address(
                 exc_info=True,
             )
         else:
+            iface = await _find_interface(cur_virdom, net.ip_network)
             await qemu.agent_exec(
                 cur_virdom,
-                ["ip", "addr", "del", ip_address, "dev", "vif0"],
+                ["ip", "addr", "del", ip_address, "dev", iface],
             )
 
+    iface = await _find_interface(new_virdom, net.ip_network)
     result = await qemu.agent_exec(
         new_virdom,
-        ["ip", "addr", "add", ip_address, "dev", "vif0"],
+        ["ip", "addr", "add", ip_address, "dev", iface],
     )
 
     if result.returncode != 0:
         raise _routing.InternalServerError(
-            f"could not assign address in VM: {result.returncode}, "
-            f"{result.stderr.read()}"
+            f"could not assign address in VM: {result.returncode}\n"
+            f"{result.stderr.read().decode('utf-8', errors='replace')}"
         )
 
     with db_conn:
@@ -372,3 +374,34 @@ async def disassociate_address(
     return {
         "return": "true",
     }
+
+
+async def _find_interface(
+    domain: libvirt.virDomain,
+    network: ipaddress.IPv4Network,
+) -> str:
+    result = await qemu.agent_exec(
+        domain,
+        ["ip", "-json", "addr", "show"],
+    )
+
+    if result.returncode != 0:
+        raise _routing.InternalServerError(
+            "could not list VM network interfaces"
+        )
+
+    interfaces = json.loads(result.stdout.read())
+    for iface_desc in interfaces:
+        for addr in iface_desc["addr_info"]:
+            if addr["family"] != "inet":
+                continue
+            addr_net = ipaddress.IPv4Network(
+                f"{addr['local']}/{addr['prefixlen']}",
+                strict=False,
+            )
+            if addr_net == network:
+                return iface_desc["ifname"]  # type: ignore [no-any-return]
+
+    raise _routing.InternalServerError(
+        f"could not find interface for network {network}"
+    )

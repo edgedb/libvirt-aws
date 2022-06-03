@@ -193,7 +193,7 @@ class Network:
     def ip_network(self) -> ipaddress.IPv4Network:
         ip = self._net.get("ip")
         if ip is None:
-            return ValueError("network does not define an IP block")
+            raise ValueError("network does not define an IP block")
         if ip["@family"] != "ipv4":
             raise ValueError("network is not an IPv4 network")
         return ipaddress.IPv4Network(
@@ -207,15 +207,15 @@ class Network:
     ) -> tuple[ipaddress.IPv4Address, ipaddress.IPv4Address]:
         ip = self._net.get("ip")
         if ip is None:
-            return ValueError("network does not define an IP block")
+            raise ValueError("network does not define an IP block")
         if ip["@family"] != "ipv4":
             raise ValueError("network is not an IPv4 network")
         dhcp = ip.get("dhcp")
         if dhcp is None:
-            return ValueError("network does not define a DHCP block")
+            raise ValueError("network does not define a DHCP block")
         dhcpRange = dhcp.get("range")
         if dhcpRange is None:
-            return ValueError("network does not define a DHCP range block")
+            raise ValueError("network does not define a DHCP range block")
 
         ip_iter = self.ip_network.hosts()
         next(ip_iter)
