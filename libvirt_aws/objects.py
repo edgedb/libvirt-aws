@@ -1,13 +1,18 @@
 from __future__ import annotations
 from typing import (
     Any,
+    Dict,
     List,
     Mapping,
     Optional,
+    Set,
+    Tuple,
 )
 
+import collections
 import functools
 import ipaddress
+import types
 
 import libvirt
 import xmltodict
@@ -184,10 +189,302 @@ def network_from_xml(xml: str) -> Network:
     return Network(xml)
 
 
+DNSRecords = Mapping[Tuple[str, str], Set[str]]
+
+
 class Network:
     def __init__(self, netxml: str) -> None:
         parsed = xmltodict.parse(netxml)
         self._net = parsed["network"]
+        self._records: Optional[DNSRecords] = None
+
+    def dump_xml(self) -> str:
+        return xmltodict.unparse(self._net)  # type: ignore [no-any-return]
+
+    @property
+    def uuid(self) -> str:
+        uuid = self._net.get("uuid")
+        assert isinstance(uuid, str)
+        return uuid
+
+    @property
+    def domain(self) -> Optional[str]:
+        dom = self._net.get("domain")
+        if dom is not None:
+            return dom["@name"]  # type: ignore [no-any-return]
+        else:
+            return None
+
+    @property
+    def dns_domain(self) -> Optional[str]:
+        return fqdn(self.domain) if self.domain is not None else None
+
+    @property
+    def dns_records(self) -> DNSRecords:
+        if self._records is None:
+            self._records = self._extract_records()
+        return types.MappingProxyType(self._records)
+
+    def _extract_records(self) -> DNSRecords:
+        dns = self._net.get("dns")
+        if not dns:
+            return {}
+
+        assert isinstance(dns, dict)
+
+        memo: DNSRecords = collections.defaultdict(set)
+        for k, v in dns.items():
+            if isinstance(v, list):
+                vv = v
+            else:
+                vv = [v]
+            if k == "txt":
+                for v in vv:
+                    memo[k.upper(), v["@name"]].add(v["@value"])
+            elif k == "srv":
+                for v in vv:
+                    name = f"_{v['@service']}._{v['@protocol']}"
+                    domain = v.get("@domain")
+                    if domain:
+                        name += f".{domain}"
+                    val = " ".join(
+                        (
+                            v.get("@priority", "0"),
+                            v.get("@weight", "0"),
+                            v.get("@port", "0"),
+                            v.get("@target", "."),
+                        )
+                    )
+                    memo[k.upper(), name].add(val)
+            elif k == "host":
+                for v in vv:
+                    addr = ipaddress.ip_address(v["@ip"])
+                    rectype = "A" if addr.version == 4 else "AAAA"
+                    h = v["hostname"]
+                    if isinstance(h, list):
+                        hh = h
+                    else:
+                        hh = [h]
+                    for h in hh:
+                        memo[rectype, fqdn(h)].add(v["@ip"])
+
+        return memo
+
+    def set_dns_records(self, records: DNSRecords) -> None:
+        self._records = records
+        self._update_records(records)
+
+    def _update_records(self, records: DNSRecords) -> None:
+        try:
+            dns = self._net["dns"]
+        except KeyError:
+            dns = self._net["dns"] = {}
+
+        assert isinstance(dns, dict)
+        # Remove all current records
+        dns = {k: v for k, v in dns.items() if k not in {"txt", "srv", "host"}}
+
+        hosts: Dict[str, List[str]] = collections.defaultdict(list)
+
+        for (type, name), values in records.items():
+            if type in {"A", "AAAA"}:
+                for value in values:
+                    hosts[value].append(name)
+            elif type == "TXT":
+                if "txt" not in dns:
+                    dns["txt"] = []
+                for value in values:
+                    dns["txt"].append({"@name": name, "@value": value})
+            elif type == "SRV":
+                if "srv" not in dns:
+                    dns["srv"] = []
+                for value in values:
+                    prio, weight, port, target = value.split(" ", 4)
+                    dns["srv"].append(
+                        {
+                            "@name": name,
+                            "@priority": prio,
+                            "@weight": weight,
+                            "@port": port,
+                            "@target": target,
+                        }
+                    )
+
+        if hosts:
+            dns["host"] = [
+                {"@ip": k, "hostname": v} for k, v in hosts.values()
+            ]
+
+    def get_dns_diff(
+        self,
+        records: DNSRecords,
+    ) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+        current = self.dns_records
+
+        add_hosts: Dict[str, List[str]] = collections.defaultdict(list)
+        mod_hosts: Set[str] = set()
+
+        added: List[Tuple[str, str]] = []
+        deleted: List[Tuple[str, str]] = []
+
+        norm_records = {
+            (type, fqdn(name)): values
+            for (type, name), values in records.items()
+        }
+
+        for (type, name), values in norm_records.items():
+            prev = current.get((type, name), set())
+            if type in {"A", "AAAA"}:
+                for value in values:
+                    add_hosts[value].append(name)
+                mod_hosts.update(prev)
+            elif type == "TXT":
+                for value in prev:
+                    deleted.append(
+                        (
+                            "txt",
+                            xmltodict.unparse(
+                                {"txt": {"@name": name, "@value": value}}
+                            ),
+                        )
+                    )
+                for value in values:
+                    added.append(
+                        (
+                            "txt",
+                            xmltodict.unparse(
+                                {"txt": {"@name": name, "@value": value}}
+                            ),
+                        )
+                    )
+
+            elif type == "SRV":
+                parts = name.split(".", maxsplit=3)
+                if len(parts) == 2:
+                    service, protocol = parts
+                    domain = None
+                else:
+                    service, protocol, domain = parts
+
+                for value in prev:
+                    priority, weight, port, target = value.split(
+                        " ", maxsplit=4
+                    )
+
+                    deleted.append(
+                        (
+                            "srv",
+                            xmltodict.unparse(
+                                {
+                                    "srv": {
+                                        "@service": service,
+                                        "@protocol": protocol,
+                                        "@domain": domain,
+                                        "@priority": priority,
+                                        "@weight": weight,
+                                        "@port": port,
+                                        "@target": target,
+                                    }
+                                }
+                            ),
+                        )
+                    )
+
+                for value in values:
+                    priority, weight, port, target = value.split(
+                        " ", maxsplit=4
+                    )
+
+                    added.append(
+                        (
+                            "srv",
+                            xmltodict.unparse(
+                                {
+                                    "srv": {
+                                        "@service": service,
+                                        "@protocol": protocol,
+                                        "@domain": domain,
+                                        "@priority": priority,
+                                        "@weight": weight,
+                                        "@port": port,
+                                        "@target": target,
+                                    }
+                                }
+                            ),
+                        )
+                    )
+
+        for (type, name), values in current.items():
+            if (type, name) in norm_records:
+                continue
+
+            if type == "SRV":
+                for value in values:
+                    priority, weight, port, target = value.split(
+                        " ", maxsplit=4
+                    )
+
+                    deleted.append(
+                        (
+                            "srv",
+                            xmltodict.unparse(
+                                {
+                                    "srv": {
+                                        "@service": service,
+                                        "@protocol": protocol,
+                                        "@domain": domain,
+                                        "@priority": priority,
+                                        "@weight": weight,
+                                        "@port": port,
+                                        "@target": target,
+                                    }
+                                }
+                            ),
+                        )
+                    )
+            elif type == "TXT":
+                for value in values:
+                    deleted.append(
+                        (
+                            "txt",
+                            xmltodict.unparse(
+                                {"txt": {"@name": name, "@value": value}}
+                            ),
+                        )
+                    )
+            elif type in {"A", "AAAA"}:
+                mod_hosts.update(values)
+
+        for addr, hosts in add_hosts.items():
+            added.append(
+                (
+                    "host",
+                    xmltodict.unparse(
+                        {
+                            "host": {
+                                "@ip": addr,
+                                "hostname": [{"#text": h} for h in hosts],
+                            }
+                        }
+                    ),
+                )
+            )
+
+        for addr in mod_hosts:
+            deleted.append(
+                (
+                    "host",
+                    xmltodict.unparse(
+                        {
+                            "host": {
+                                "@ip": addr,
+                            }
+                        }
+                    ),
+                )
+            )
+
+        return added, deleted
 
     @property
     def ip_network(self) -> ipaddress.IPv4Network:
@@ -225,3 +522,7 @@ class Network:
             start,
             ipaddress.IPv4Address(dhcpRange["@start"]),
         )
+
+
+def fqdn(hostname: str) -> str:
+    return f"{hostname}." if not hostname.endswith(".") else hostname

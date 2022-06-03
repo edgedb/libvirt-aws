@@ -5,15 +5,18 @@ from typing import (
     Callable,
     Dict,
     Generic,
-    Iterable,
     List,
+    Literal,
     Mapping,
+    NamedTuple,
     Optional,
+    Set,
     Tuple,
     TypeVar,
     Union,
 )
 
+import functools
 import traceback
 import uuid
 from xml.dom import minidom
@@ -26,14 +29,33 @@ import libvirt
 
 
 App = web.Application
+routes = web.RouteTableDef()
+
+
+def _format_condensed_list(parent: str) -> str:
+    return parent[:-1]
+
+
+def _format_expanded_list(parent: str) -> str:
+    return parent[:-1]
 
 
 def format_xml_response(
     data: Mapping[str, Any],
     root: Optional[str] = None,
     xmlns: Optional[str] = None,
+    list_format: Literal["condensed", "expanded"] = "expanded",
 ) -> str:
-    bbody = dicttoxml.dicttoxml(data, root=False, attr_type=False)
+    bbody = dicttoxml.dicttoxml(
+        data,
+        root=False,
+        attr_type=False,
+        item_func=(
+            _format_condensed_list
+            if list_format == "condensed"
+            else _format_expanded_list
+        ),
+    )
     body = bbody.decode("utf-8")
     if root is not None:
         if xmlns is not None:
@@ -55,27 +77,27 @@ class ServiceError(web.HTTPError):
         status_code: Optional[int] = None,
         **kwargs: Any,
     ) -> None:
-        text = format_xml_response(
-            {
-                "Response": {
-                    "RequestID": str(uuid.uuid4()),
-                    "Errors": {
-                        "Error": {
-                            "Code": self.code,
-                            "Message": msg,
-                        },
-                    },
-                },
-            }
-        )
         if status_code is not None:
             self.status_code = status_code
+        self.msg = msg
+        super().__init__(content_type="text/xml", **kwargs)
 
-        dom = minidom.parseString(text)
-        aiohttp.log.access_logger.debug(
-            f"Error Response:\n\n{dom.toprettyxml()}"
-        )
-        super().__init__(text=text, content_type="text/xml", **kwargs)
+
+def format_ec2_error_xml(err: ServiceError) -> str:
+    return format_xml_response(
+        {
+            "Response": {
+                "RequestID": str(uuid.uuid4()),
+                "Errors": {
+                    "Error": {
+                        "Code": err.code,
+                        "Message": err.msg,
+                        "Type": "Sender",
+                    },
+                },
+            },
+        },
+    )
 
 
 class ClientError(ServiceError, web.HTTPBadRequest):
@@ -132,32 +154,156 @@ _HandlerType = Callable[
     [HandlerArgs, libvirt.virStoragePool],
     Awaitable[Dict[str, Any]],
 ]
-_handlers: Dict[Tuple[str, str], _HandlerType] = {}
+
+
+class _HandlerData(NamedTuple):
+    handler: _HandlerType
+    xmlns: Optional[str]
+    list_format: Literal["condensed", "expanded"]
+    error_formatter: Callable[[ServiceError], str]
+    include_request_id: bool
+
+
+_handlers: Dict[Tuple[str, str], _HandlerData] = {}
+_path_handlers: Set[Tuple[str, str]] = set()
 
 
 def handler(
     action: str,
-    methods: Iterable[str] = frozenset({"GET", "POST"}),
+    *,
+    methods: str | Tuple[str, ...] = ("GET", "POST"),
+    path: str = "/",
+    xmlns: Optional[str] = None,
+    list_format: Literal["condensed", "expanded"] = "expanded",
+    error_formatter: Callable[[ServiceError], str] = format_ec2_error_xml,
 ) -> Callable[[_HandlerType], _HandlerType]:
+    if isinstance(methods, str):
+        methods = (methods,)
+
     def inner(handler: _HandlerType) -> _HandlerType:
         global _handlers
         for method in methods:
-            _handlers[action, method] = handler
+            key = (action, method)
+            if key not in _handlers:
+                _handlers[key] = _HandlerData(
+                    handler=handler,
+                    xmlns=xmlns,
+                    list_format=list_format,
+                    error_formatter=error_formatter,
+                    include_request_id=True,
+                )
+                if (method, path) not in _path_handlers:
+                    routes.route(method, path)(handle_request)
+                    _path_handlers.add((method, path))
+
+            else:
+                raise AssertionError(f"{method} {action} is already handled")
         return handler
 
     return inner
 
 
-async def handle_request(request: web.Request) -> web.StreamResponse:
-    data: Union[
-        multidict.MultiDictProxy[str],
-        multidict.MultiDictProxy[Union[str, bytes, web.FileField]],
-    ]
+def direct_handler(
+    action: str,
+    *,
+    methods: str | Tuple[str, ...] = ("GET", "POST"),
+    path: str = "/",
+    xmlns: Optional[str] = None,
+    list_format: Literal["condensed", "expanded"] = "expanded",
+    error_formatter: Callable[[ServiceError], str] = format_ec2_error_xml,
+) -> Callable[[_HandlerType], _HandlerType]:
+
+    if isinstance(methods, str):
+        methods = (methods,)
+
+    def inner(handler: _HandlerType) -> _HandlerType:
+        global _handlers
+        for method in methods:
+            key = (action, method)
+            if key not in _handlers:
+                _handlers[key] = _HandlerData(
+                    handler=handler,
+                    xmlns=xmlns,
+                    list_format=list_format,
+                    error_formatter=error_formatter,
+                    include_request_id=False,
+                )
+                if (method, path) not in _path_handlers:
+                    routes.route(method, path)(
+                        functools.partial(
+                            handle_request,
+                            action=action,
+                        )
+                    )
+                    _path_handlers.add((method, path))
+                else:
+                    raise AssertionError(f"{method} {path} is already handled")
+            else:
+                raise AssertionError(f"{method} {action} is already handled")
+        return handler
+
+    return inner
+
+
+Args = Union[
+    multidict.MultiDictProxy[str],
+    multidict.MultiDictProxy[Union[str, bytes, web.FileField]],
+]
+
+
+def parse_args(data: Args) -> HandlerArgs:
+    args: HandlerArgs = {}
+
+    for k, v in data.items():
+        if not isinstance(v, str):
+            raise InvalidParameterError(
+                f"Value {v!r} for parameter {k} is invalid: "
+                f"must be a string."
+            )
+
+        path = k.split(".")
+        path_len = len(path)
+        if path_len == 1:
+            args[k] = v
+        else:
+            i = 0
+            ptr: Any = args
+            while i < path_len:
+                subkey: str | int
+                if path[i].isnumeric():
+                    subkey = int(path[i]) - 1
+                else:
+                    subkey = path[i]
+                i += 1
+                try:
+                    ptr = ptr[subkey]
+                except (KeyError, IndexError):
+                    if i == path_len:
+                        ptr[subkey] = v
+                        break
+                    elif path[i].isnumeric():
+                        ptr[subkey] = SparseList()
+                    else:
+                        ptr[subkey] = {}
+
+                    ptr = ptr[subkey]
+
+    return args
+
+
+async def handle_request(
+    request: web.Request,
+    *,
+    action: Optional[str] = None,
+) -> web.StreamResponse:
+    data: Args
 
     if request.method == "POST":
         data = await request.post()
+        body = await request.text()
     elif request.method == "GET":
         data = request.query
+        body = ""
     else:
         raise InvalidMethodError(
             f"Method Not Allowed: {request.method}",
@@ -165,72 +311,59 @@ async def handle_request(request: web.Request) -> web.StreamResponse:
             allowed_methods=["GET", "POST"],
         )
 
-    action = data.get("Action")
+    if action is None:
+        action_arg = data.get("Action")
+        if not isinstance(action_arg, str):
+            raise InvalidActionError(f"Invalid Action: {action_arg!r}")
+        action = action_arg
 
-    if not isinstance(action, str):
-        raise InvalidActionError(f"Invalid Action: {action!r}")
+    handler_data = _handlers.get((action, request.method))
 
-    handler = _handlers.get((action, request.method))
-    if handler is None:
+    if handler_data is None:
         raise InvalidActionError(
             f"The action {action} is not valid for this web service."
         )
-    else:
-        args: HandlerArgs = {}
 
-        for k, v in data.items():
-            if not isinstance(v, str):
-                raise InvalidParameterError(
-                    f"Value {v!r} for parameter {k} is invalid: "
-                    f"must be a string."
-                )
+    args = dict(request.match_info)
+    args["BodyText"] = body
+    args.update(parse_args(data))
 
-            path = k.split(".")
-            path_len = len(path)
-            if path_len == 1:
-                args[k] = v
-            else:
-                i = 0
-                ptr: Any = args
-                while i < path_len:
-                    subkey: str | int
-                    if path[i].isnumeric():
-                        subkey = int(path[i]) - 1
-                    else:
-                        subkey = path[i]
-                    i += 1
-                    try:
-                        ptr = ptr[subkey]
-                    except (KeyError, IndexError):
-                        if i == path_len:
-                            ptr[subkey] = v
-                            break
-                        elif path[i].isnumeric():
-                            ptr[subkey] = SparseList()
-                        else:
-                            ptr[subkey] = {}
+    xmlns = handler_data.xmlns
 
-                        ptr = ptr[subkey]
+    if xmlns is None:
+        version = args.get("Version")
+        if version is not None:
+            xmlns = f"http://ec2.amazonaws.com/doc/{version}/"
 
-        try:
-            result = await handler(args, request.app)
+    try:
+        result = await handler_data.handler(args, request.app)
+
+        if handler_data.include_request_id:
             result["RequestID"] = str(uuid.uuid4())
-            version = args.get("Version")
-            text = format_xml_response(
-                result,
-                root=f"{action}Response",
-                xmlns=(
-                    f"http://ec2.amazonaws.com/doc/{version}/"
-                    if version
-                    else None
-                ),
-            )
-            dom = minidom.parseString(text)
-            aiohttp.log.access_logger.debug(
-                f"Response:\n---------\n{dom.toprettyxml()}"
-            )
-            return web.Response(text=text, content_type="text/xml")
-        except ServiceError:
-            raise
-        except Exception:
-            raise InternalServerError("\n" + traceback.format_exc()) from None
+
+        text = format_xml_response(
+            result,
+            root=f"{action}Response",
+            xmlns=xmlns,
+            list_format=handler_data.list_format,
+        )
+        dom = minidom.parseString(text)
+        aiohttp.log.access_logger.debug(
+            f"Response:\n---------\n{dom.toprettyxml()}"
+        )
+        return web.Response(text=text, content_type="text/xml")
+    except ServiceError as e:
+        e.text = handler_data.error_formatter(e)
+        dom = minidom.parseString(e.text)
+        aiohttp.log.access_logger.debug(
+            f"Error Response:\n\n{dom.toprettyxml()}"
+        )
+        raise e
+    except Exception:
+        exc = InternalServerError("\n" + traceback.format_exc())
+        exc.text = handler_data.error_formatter(exc)
+        dom = minidom.parseString(exc.text)
+        aiohttp.log.access_logger.debug(
+            f"Error Response:\n\n{dom.toprettyxml()}"
+        )
+        raise exc from None

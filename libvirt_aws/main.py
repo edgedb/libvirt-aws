@@ -71,6 +71,16 @@ def init_db(db: sqlite3.Connection) -> None:
             );
         """
         )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dns_changes (
+                id           text,
+                submitted_at text,
+                comment      text,
+                UNIQUE (id)
+            );
+        """
+        )
 
 
 def init_app(
@@ -99,16 +109,7 @@ def init_app(
     app["db"] = sqlite3.connect(database)
     app["logger"] = logging.getLogger("libvirt-aws")
     init_db(app["db"])
-    app.add_routes(
-        [
-            web.post("/", handlers.handle_request),
-            web.get("/", handlers.handle_request),
-            web.put("/", handlers.handle_request),
-            web.patch("/", handlers.handle_request),
-            web.options("/", handlers.handle_request),
-            web.delete("/", handlers.handle_request),
-        ]
-    )
+    app.add_routes(handlers.routes)
     app.on_cleanup.append(close_libvirt)
     return app
 
