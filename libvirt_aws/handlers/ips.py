@@ -34,6 +34,11 @@ class InvalidAddress_NotFound(_routing.ClientError):
     code = "InvalidAddress.NotFound"
 
 
+class InvalidAddress_InUse(_routing.ClientError):
+
+    code = "InvalidIPAddress.InUse"
+
+
 class InvalidAssociationID_NotFound(_routing.ClientError):
 
     code = "InvalidAssociationID.NotFound"
@@ -369,6 +374,56 @@ async def disassociate_address(
                     association_id = ?
             """,
             [assoc_id],
+        )
+
+    return {
+        "return": "true",
+    }
+
+
+@_routing.handler("ReleaseAddress")
+async def release_address(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    alloc_id = args.get("AllocationId")
+    if not alloc_id:
+        raise _routing.InvalidParameterError("missing required AllocationId")
+
+    db_conn = app["db"]
+
+    with db_conn:
+        cur = db_conn.execute(
+            """
+                SELECT instance_id
+                FROM ip_addresses
+                WHERE allocation_id = ?
+            """,
+            [alloc_id],
+        )
+
+        row = cur.fetchone()
+        if row is None:
+            raise InvalidAddress_NotFound(
+                "could not find address for specified AllocationId"
+            )
+
+        cur_instance_id = row[0]
+        if cur_instance_id is not None:
+            raise InvalidAddress_InUse(
+                f"specified address is in use by instance {cur_instance_id}, "
+                f"call DisassociateAddress first"
+            )
+
+    with db_conn:
+        db_conn.execute(
+            """
+                DELETE FROM
+                    ip_addresses
+                WHERE
+                    allocation_id = ?
+            """,
+            [alloc_id],
         )
 
     return {
