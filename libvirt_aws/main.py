@@ -83,8 +83,19 @@ def init_app(
     # logging.basicConfig(level=logging.DEBUG)
     aiohttp.log.access_logger.setLevel(logging.DEBUG)
     app["libvirt"] = libvirt.open(libvirt_uri)
-    app["libvirt_pool"] = app["libvirt"].storagePoolLookupByName(pool)
-    app["libvirt_net"] = app["libvirt"].networkLookupByName(network)
+
+    try:
+        app["libvirt_pool"] = app["libvirt"].storagePoolLookupByName(pool)
+    except libvirt.libvirtError:
+        app["libvirt_pool"] = app["libvirt"].storagePoolLookupByUUIDString(
+            pool
+        )
+
+    try:
+        app["libvirt_net"] = app["libvirt"].networkLookupByName(network)
+    except libvirt.libvirtError:
+        app["libvirt_net"] = app["libvirt"].networkLookupByUUIDString(network)
+
     app["db"] = sqlite3.connect(database)
     app["logger"] = logging.getLogger("libvirt-aws")
     init_db(app["db"])
