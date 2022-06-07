@@ -84,7 +84,7 @@ async def list_hosted_zones(
     return {
         "HostedZones": {
             "HostedZone": {
-                "Id": f"/hostedzone/{net.uuid}",
+                "Id": f"/hostedzone/{net.name}",
                 "Name": domain,
                 "Config": {
                     "Comment": "libvirt network zone",
@@ -168,7 +168,7 @@ async def get_hosted_zone(
             "libvirt network does not define a domain"
         )
 
-    if zone_id != net.uuid:
+    if zone_id != net.name:
         raise NoSuchHostedZoneError(f"zone {zone_id} does not exist")
 
     return {
@@ -209,7 +209,7 @@ async def list_resource_record_sets(
             "libvirt network does not define a domain"
         )
 
-    if zone_id != net.uuid:
+    if zone_id != net.name:
         raise NoSuchHostedZoneError(f"zone {zone_id} does not exist")
 
     def _name_key(name: str) -> str:
@@ -277,7 +277,7 @@ async def change_resource_record_sets(
             "libvirt network does not define a domain"
         )
 
-    if zone_id != net.uuid:
+    if zone_id != net.name:
         raise NoSuchHostedZoneError(f"zone {zone_id} does not exist")
 
     parsed = xmltodict.parse(args["BodyText"])

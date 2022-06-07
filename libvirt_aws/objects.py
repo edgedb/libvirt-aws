@@ -202,6 +202,12 @@ class Network:
         return xmltodict.unparse(self._net)  # type: ignore [no-any-return]
 
     @property
+    def name(self) -> str:
+        name = self._net.get("name")
+        assert isinstance(name, str)
+        return name
+
+    @property
     def uuid(self) -> str:
         uuid = self._net.get("uuid")
         assert isinstance(uuid, str)
