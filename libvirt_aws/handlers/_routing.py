@@ -37,7 +37,7 @@ def _format_condensed_list(parent: str) -> str:
 
 
 def _format_expanded_list(parent: str) -> str:
-    return parent[:-1]
+    return "item"
 
 
 def format_xml_response(
