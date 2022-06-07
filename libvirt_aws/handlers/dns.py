@@ -333,21 +333,22 @@ async def change_resource_record_sets(
 
     for typ, xml in removed:
         section = f"VIR_NETWORK_SECTION_DNS_{typ.upper()}"
-        app["libvirt_net"].update(
+        _net_update(
+            app["libvirt_net"],
             libvirt.VIR_NETWORK_UPDATE_COMMAND_DELETE,
             getattr(libvirt, section),
-            -1,
             xml,
         )
 
     for typ, xml in added:
         section = f"VIR_NETWORK_SECTION_DNS_{typ.upper()}"
-        app["libvirt_net"].update(
+        _net_update(
+            app["libvirt_net"],
             libvirt.VIR_NETWORK_UPDATE_COMMAND_ADD_LAST,
             getattr(libvirt, section),
-            -1,
             xml,
         )
+
     change_id = str(uuid.uuid4()).replace("-", "")
     submitted_at = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 
@@ -405,3 +406,21 @@ async def get_change(
             "SubmittedAt": rec[1],
         },
     }
+
+
+# Work around the issue in libvirt <7.2.0 where NetworkUpdate arguments
+# were incorrectly swapped on the client side.
+#
+# See https://listman.redhat.com/archives/libvir-list/2021-March/msg00054.html
+# and https://listman.redhat.com/archives/libvir-list/2021-March/msg00760.html
+def _net_update(
+    net: libvirt.virNetwork,
+    command: int,
+    section: int,
+    xml: str,
+) -> None:
+    lvconn = net.connect()
+    if lvconn.getVersion() < 7002000:
+        net.update(section, command, -1, xml)
+    else:
+        net.update(command, section, -1, xml)
