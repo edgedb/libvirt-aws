@@ -61,7 +61,7 @@ async def describe_addresses(
         assert isinstance(filters, list)
         for flt in filters:
             if flt["Name"].startswith("tag:"):
-                tagname = flt["Name"][len("tag:")]
+                tagname = flt["Name"][len("tag:"):]
                 tagvalue = flt["Value"]
                 tags.append((tagname, tagvalue))
             elif flt["Name"] == "public-ip":
@@ -104,17 +104,25 @@ async def describe_addresses(
         qargs.extend(assoc_ids)
 
     if tags:
+        tag_filters = " OR ".join(
+            f"(tagname = ? AND tagvalue IN ({','.join(('?',) * len(tvals))}))"
+            for (_tn, tvals) in tags
+        )
+
         quals.append(
             f"""ip_address IN (
                     SELECT resource_name FROM tags
                     WHERE
                       resource_type = 'ip_address'
-                      AND (tagname, tagvalue) IN (
-                          {','.join(('(?, ?)',) * len(tags))}
-                      )
+                      AND ({tag_filters})
+                )
             """
         )
-        qargs.extend(itertools.chain.from_iterable(tags))
+        qargs.extend(
+            itertools.chain.from_iterable(
+                [tagname] + tagvalues for (tagname, tagvalues) in tags
+            )
+        )
 
     query = """
         SELECT
@@ -129,7 +137,7 @@ async def describe_addresses(
         query += f" WHERE {' AND '.join(quals)}"
 
     with app["db"]:
-        cur = app["db"].execute(query)
+        cur = app["db"].execute(query, qargs)
         addresses = cur.fetchall()
 
         cur = app["db"].execute(
