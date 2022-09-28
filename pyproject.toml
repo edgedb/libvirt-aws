@@ -6,7 +6,7 @@ authors = [{ email = "elvis@edgedb.com", name = "Elvis Pranskevichus" }]
 dependencies = [
     "aiohttp~=3.8.1",
     "click~=8.1.3",
-    "dicttoxml~=1.7.4",
+    "dicttoxml @ git+https://github.com/quandyfactory/dicttoxml.git@e77aa00309d42e55af7ff537adeab491e558674b",
     "libvirt-python>=6.0.0",
     "xmltodict~=0.13.0",
 ]
