@@ -12,14 +12,16 @@ async def describe_availability_zones(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> Dict[str, Any]:
+    region = app["region"]
     return {
         "availabilityZoneInfo": [
             {
                 "optInStatus": "opt-in-not-required",
-                "zoneName": "us-east-2a",
-                "zoneId": "us-east-2a",
+                "zoneName": f"{region}{az}",
+                "zoneId": f"{region}{az}",
                 "zoneState": "available",
-                "regionName": "us-east-2",
+                "regionName": region,
             }
+            for az in ["a", "b", "c"]
         ],
     }

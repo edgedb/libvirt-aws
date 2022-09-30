@@ -88,6 +88,7 @@ def init_app(
     network: str,
     libvirt_uri: str,
     database: str,
+    region: str,
 ) -> web.Application:
     app = web.Application()
     # logging.basicConfig(level=logging.DEBUG)
@@ -108,6 +109,7 @@ def init_app(
 
     app["db"] = sqlite3.connect(database)
     app["logger"] = logging.getLogger("libvirt-aws")
+    app["region"] = region
     init_db(app["db"])
     app.add_routes(handlers.routes)
     app.on_cleanup.append(close_libvirt)
@@ -121,8 +123,8 @@ async def close_libvirt(app: web.Application) -> None:
 @click.command()
 @click.option("--bind-to", default=None, type=str, help="Address to listen on")
 @click.option("--port", default=5100, type=int, help="TCP port to listen on")
-@click.option("--libvirt-uri", default="qemu:///system", help="Libvirtd URI")
 @click.option("--database", default="pool.db", help="Path to sqlite db")
+@click.option("--libvirt-uri", default="qemu:///system", help="Libvirtd URI")
 @click.option(
     "--libvirt-image-pool",
     default="default",
@@ -133,14 +135,21 @@ async def close_libvirt(app: web.Application) -> None:
     default="default",
     help="Name of libvirt network to use for EIP emulation.",
 )
+@click.option(
+    "--region",
+    default="us-east-2",
+    type=str,
+    help="AWS region to pretend to be in",
+)
 def main(
     *,
     bind_to: Optional[str],
     port: int,
+    database: str,
     libvirt_image_pool: str,
     libvirt_network: str,
     libvirt_uri: str,
-    database: str,
+    region: str,
 ) -> None:
     web.run_app(
         init_app(
@@ -148,6 +157,7 @@ def main(
             network=libvirt_network,
             libvirt_uri=libvirt_uri,
             database=database,
+            region=region,
         ),
         access_log_class=AccessLogger,
         host=bind_to,
