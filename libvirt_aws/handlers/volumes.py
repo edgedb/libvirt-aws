@@ -56,8 +56,14 @@ async def create_volume(
         <capacity unit="G">{size}</capacity>
         <target>
             <path>{volname}</path>
+            <permissions>
+                <mode>0644</mode>
+            </permissions>
             <format type='qcow2'/>
             <compat>1.1</compat>
+            <features>
+                <lazy_refcounts/>
+            </features>
         </target>
     </volume>"""
     )
