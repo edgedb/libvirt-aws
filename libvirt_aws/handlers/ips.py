@@ -61,7 +61,7 @@ async def describe_addresses(
         assert isinstance(filters, list)
         for flt in filters:
             if flt["Name"].startswith("tag:"):
-                tagname = flt["Name"][len("tag:"):]
+                tagname = flt["Name"][len("tag:") :]
                 tagvalue = flt["Value"]
                 tags.append((tagname, tagvalue))
             elif flt["Name"] == "public-ip":
@@ -446,7 +446,24 @@ async def release_address(
                 f"call DisassociateAddress first"
             )
 
-    with db_conn:
+        db_conn.execute(
+            """
+                DELETE FROM
+                    tags
+                WHERE
+                    resource_name = (
+                        SELECT
+                            ip_address
+                        FROM
+                            ip_addresses
+                        WHERE
+                            allocation_id = ?
+                    )
+                    AND resource_type = 'ip_address'
+            """,
+            [alloc_id],
+        )
+
         db_conn.execute(
             """
                 DELETE FROM
