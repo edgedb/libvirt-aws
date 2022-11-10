@@ -139,14 +139,18 @@ async def create_hosted_zone(
             [change_id, submitted_at, comment],
         )
 
+    config = {
+        "PrivateZone": False,
+    }
+
+    if comment:
+        config["Comment"] = comment
+
     return {
         "HostedZone": {
             "Id": f"/hostedzone/{zone_id}",
             "Name": name,
-            "Config": {
-                "Comment": comment,
-                "PrivateZone": False,
-            },
+            "Config": config,
             "ResourceRecordSetCount": 2,
             "CallerReference": caller_ref,
         },
@@ -158,6 +162,70 @@ async def create_hosted_zone(
         "DelegationSet": {
             "CallerReference": caller_ref,
             "NameServers": {"NameServer": f"gw.{domain}"},
+        },
+    }
+
+
+@route53_handler(
+    "UpdateHostedZoneComment",
+    methods="POST",
+    path="/2013-04-01/hostedzone/{Id}",
+)
+async def update_hosted_zone(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    zone_id = args.get("Id")
+    if not zone_id:
+        raise _routing.InvalidParameterError("missing required Id")
+
+    net = objects.network_from_xml(app["libvirt_net"].XMLDesc())
+    domain = net.dns_domain
+    if domain is None:
+        raise _routing.InternalServerError(
+            "libvirt network does not define a domain"
+        )
+
+    if zone_id == net.name:
+        raise InvalidDomainNameError(f"zone {zone_id} cannot be updated")
+
+    zone = _get_subzone(zone_id, app)
+
+    try:
+        parsed = xmltodict.parse(args["BodyText"])
+        request = parsed["UpdateHostedZoneCommentRequest"]
+    except (KeyError, ValueError):
+        raise InvalidInputError("input is not valid") from None
+
+    comment = request.get("Comment")
+    if comment == "":
+        comment = None
+
+    db = app["db"]
+    with db:
+        db.execute(
+            f"""
+                UPDATE dns_zones
+                SET comment = ?
+                WHERE id = ?
+            """,
+            [comment, zone_id],
+        )
+
+    caller_ref = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+    config = {
+        "PrivateZone": False,
+    }
+    if comment:
+        config["Comment"] = comment
+
+    return {
+        "HostedZone": {
+            "Id": f"/hostedzone/{zone_id}",
+            "Name": zone[1],
+            "Config": config,
+            "ResourceRecordSetCount": len(_get_records(zone[1], net, app)),
+            "CallerReference": caller_ref,
         },
     }
 
@@ -267,14 +335,16 @@ async def list_hosted_zones(
     ]
 
     for zone in subzones:
+        config = {
+            "PrivateZone": False,
+        }
+        if zone[2]:
+            config["Comment"] = zone[2]
         zones.append(
             {
                 "Id": f"/hostedzone/{zone[0]}",
                 "Name": zone[1],
-                "Config": {
-                    "Comment": zone[2],
-                    "PrivateZone": False,
-                },
+                "Config": config,
                 "ResourceRecordSetCount": len(_get_records(zone[1], net, app)),
             },
         )
@@ -573,10 +643,8 @@ async def change_resource_record_sets(
             "libvirt network does not define a domain"
         )
 
-    if zone_id == net.name:
-        zone_name = domain
-    else:
-        zone_name = _get_subzone(zone_id, app)[1]
+    if zone_id != net.name:
+        _get_subzone(zone_id, app)[1]
 
     parsed = xmltodict.parse(args["BodyText"])
 
@@ -588,8 +656,7 @@ async def change_resource_record_sets(
     except (TypeError, KeyError, AssertionError):
         raise InvalidInputError("input is not valid") from None
 
-    records = _get_records(zone_name, net, app, include_soa_ns=False)
-    table = {k: set(r) for k, r in records.items()}
+    table = {k: set(r) for k, r in net.dns_records.items()}
 
     try:
         for change in changes:
