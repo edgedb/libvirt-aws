@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import (
     Any,
+    Callable,
     Dict,
     List,
     Mapping,
@@ -225,11 +226,63 @@ class Network:
     def dns_domain(self) -> Optional[str]:
         return fqdn(self.domain) if self.domain is not None else None
 
-    @property
-    def dns_records(self) -> DNSRecords:
+    def get_dns_records(
+        self,
+        zone: str = "",
+        exclude_zones: Optional[Set[str]] = None,
+        include_soa_ns: bool = False,
+    ) -> DNSRecords:
         if self._records is None:
             self._records = self._extract_records()
-        return types.MappingProxyType(self._records)
+
+        filters: List[Callable[[Tuple[str, str]], bool]] = []
+
+        if zone:
+            filters.append(lambda k: k[1].endswith(zone))
+
+        if exclude_zones:
+            ez = exclude_zones
+            filters.append(
+                lambda k: not any(k[1].endswith(zone) for zone in ez)
+            )
+
+        records: DNSRecords
+
+        if filters:
+            records = {
+                k: v
+                for k, v in self._records.items()
+                if all(f(k) for f in filters)
+            }
+        else:
+            records = self._records
+
+        if include_soa_ns:
+            domain = self.dns_domain
+            if not domain:
+                raise ValueError("network does not define a DNS domain")
+
+            if not zone:
+                zone = domain
+
+            if zone:
+                soa_ns = {
+                    ("SOA", zone): {
+                        f"gw.{domain} hostmaster.gw.{domain} "
+                        + "1 1200 180 1209600 600",
+                    },
+                    ("NS", zone): {
+                        f"gw.{domain}",
+                    },
+                }
+                soa_ns.update(records)
+                records = soa_ns
+
+        return types.MappingProxyType(records)
+
+    @property
+    def dns_records(self) -> DNSRecords:
+        return self.get_dns_records()
 
     def _extract_records(self) -> DNSRecords:
         dns = self._net.get("dns")
@@ -419,6 +472,8 @@ class Network:
                             ),
                         )
                     )
+            else:
+                raise ValueError(f"unsupported resource record type: {type}")
 
         for (type, name), values in current.items():
             if (type, name) in norm_records:
@@ -460,6 +515,8 @@ class Network:
                     )
             elif type in {"A", "AAAA"}:
                 mod_hosts.update(values)
+            else:
+                raise ValueError(f"unsupported resource record type: {type}")
 
         for addr, hosts in add_hosts.items():
             added.append(

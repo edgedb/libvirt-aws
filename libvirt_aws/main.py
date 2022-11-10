@@ -73,6 +73,16 @@ def init_db(db: sqlite3.Connection) -> None:
         )
         db.execute(
             """
+            CREATE TABLE IF NOT EXISTS dns_zones (
+                id           text,
+                name         text,
+                comment      text,
+                UNIQUE (id)
+            );
+        """
+        )
+        db.execute(
+            """
             CREATE TABLE IF NOT EXISTS dns_changes (
                 id           text,
                 submitted_at text,

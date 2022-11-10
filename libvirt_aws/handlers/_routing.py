@@ -301,7 +301,7 @@ async def handle_request(
     if request.method == "POST":
         data = await request.post()
         body = await request.text()
-    elif request.method == "GET":
+    elif request.method in {"GET", "DELETE"}:
         data = request.query
         body = ""
     else:
