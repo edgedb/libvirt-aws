@@ -238,12 +238,12 @@ class Network:
         filters: List[Callable[[Tuple[str, str]], bool]] = []
 
         if zone:
-            filters.append(lambda k: k[1].endswith(zone))
+            filters.append(lambda k: in_zone(k[1], zone))
 
         if exclude_zones:
             ez = exclude_zones
             filters.append(
-                lambda k: not any(k[1].endswith(zone) for zone in ez)
+                lambda k: not any(in_zone(k[1], zone) for zone in ez)
             )
 
         records: DNSRecords
@@ -589,3 +589,8 @@ class Network:
 
 def fqdn(hostname: str) -> str:
     return f"{hostname}." if not hostname.endswith(".") else hostname
+
+
+def in_zone(hostname: str, zone: str) -> bool:
+    hostname = fqdn(hostname)
+    return hostname == zone or hostname.endswith(f".{zone}")
