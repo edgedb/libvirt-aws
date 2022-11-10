@@ -156,7 +156,6 @@ async def create_hosted_zone(
             "SubmittedAt": submitted_at,
         },
         "DelegationSet": {
-            "Id": "LIBVIRTDNS",
             "CallerReference": caller_ref,
             "NameServers": {"NameServer": f"gw.{domain}"},
         },
@@ -477,7 +476,6 @@ async def get_hosted_zone(
     return {
         "HostedZone": zone,
         "DelegationSet": {
-            "Id": "LIBVIRTDNS",
             "NameServers": {"NameServer": f"gw.{domain}"},
         },
     }
