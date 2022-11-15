@@ -13,6 +13,7 @@ from typing import (
 import collections
 import functools
 import ipaddress
+import socket
 import types
 
 import libvirt
@@ -226,6 +227,12 @@ class Network:
     def dns_domain(self) -> Optional[str]:
         return fqdn(self.domain) if self.domain is not None else None
 
+    def get_dns_domain_or_die(self) -> str:
+        domain = self.dns_domain
+        if not domain:
+            raise ValueError("network does not define a DNS domain")
+        return domain
+
     def get_dns_records(
         self,
         zone: str = "",
@@ -374,6 +381,10 @@ class Network:
                 {"@ip": k, "hostname": v} for k, v in hosts.values()
             ]
 
+    def _resolve(self, target: str) -> List[str]:
+        res = socket.getaddrinfo(target, 80, proto=socket.IPPROTO_TCP)
+        return [r[4][0] for r in res]
+
     def get_dns_diff(
         self,
         records: DNSRecords,
@@ -397,6 +408,16 @@ class Network:
                 for value in values:
                     add_hosts[value].append(name)
                 mod_hosts.update(prev)
+
+            elif type == "CNAME":
+                # Unfortunately, libvirt does not support adding
+                # CNAME records, so we have to do the next best thing:
+                # try to resolve the target and add it as A instead.
+                for target in values:
+                    for address in self._resolve(target):
+                        add_hosts[address].append(name)
+                mod_hosts.update(prev)
+
             elif type == "TXT":
                 for value in prev:
                     deleted.append(
@@ -515,6 +536,12 @@ class Network:
                     )
             elif type in {"A", "AAAA"}:
                 mod_hosts.update(values)
+            elif type == "CNAME":
+                # Unfortunately, libvirt does not support adding
+                # CNAME records, so we have to do the next best thing:
+                # try to resolve the target and add it as A instead.
+                for target in values:
+                    mod_hosts.update(self._resolve(target))
             else:
                 raise ValueError(f"unsupported resource record type: {type}")
 
