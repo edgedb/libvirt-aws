@@ -356,6 +356,96 @@ async def list_hosted_zones(
 
 
 @route53_handler(
+    "ListHostedZonesByName",
+    methods="GET",
+    path="/2013-04-01/hostedzonesbyname",
+)
+async def list_hosted_zones_by_name(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    net = objects.network_from_xml(app["libvirt_net"].XMLDesc())
+    domain = net.dns_domain
+    if domain is None:
+        raise _routing.InternalServerError(
+            "libvirt network does not define a domain"
+        )
+
+    dns_name = args.get("dnsname")
+    zone_id = args.get("hostedzoneid")
+    max_items_str = args.get("maxitems")
+
+    if max_items_str:
+        try:
+            max_items = int(max_items_str)
+        except ValueError:
+            raise _routing.InvalidParameterError("maxitems must be an integer")
+
+        if max_items > 100:
+            raise _routing.InvalidParameterError(
+                "maxitems cannot be greater than 100"
+            )
+    else:
+        max_items = 100
+
+    def _name_key(name: str) -> str:
+        return ".".join(reversed(name.split(".")))
+
+    def _sort_key(zone: Dict[str, Any]) -> str:
+        return _name_key(zone["Name"])
+
+    subzones = _get_subzones(app)
+
+    zones = [
+        {
+            "Id": f"/hostedzone/{net.name}",
+            "Name": domain,
+            "Config": {
+                "Comment": "libvirt network zone",
+                "PrivateZone": False,
+            },
+            "ResourceRecordSetCount": len(_get_records("", net, app)),
+        }
+    ]
+
+    for zone in subzones:
+        config = {
+            "PrivateZone": False,
+        }
+        if zone[2]:
+            config["Comment"] = zone[2]
+        zones.append(
+            {
+                "Id": f"/hostedzone/{zone[0]}",
+                "Name": zone[1],
+                "Config": config,
+                "ResourceRecordSetCount": len(_get_records(zone[1], net, app)),
+            },
+        )
+
+    zones.sort(key=_sort_key)
+    sliced = zones[:max_items]
+    is_truncated = len(zones) > max_items
+
+    response = {
+        "HostedZones": sliced,
+        "IsTruncated": is_truncated,
+        "MaxItems": max_items,
+    }
+
+    if is_truncated:
+        response["NextDNSName"] = zones[max_items]["Name"]
+        response["NextHostedZoneId"] = zones[max_items]["Id"]
+
+    if dns_name:
+        response["DNSName"] = dns_name
+    if zone_id:
+        response["HostedZoneId"] = zone_id
+
+    return response
+
+
+@route53_handler(
     "ListTagsForResource",
     path="/2013-04-01/tags/{ResourceType}/{ResourceId}",
     methods="GET",
