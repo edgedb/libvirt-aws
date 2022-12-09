@@ -874,8 +874,7 @@ def _net_update(
     section: int,
     xml: str,
 ) -> None:
-    lvconn = net.connect()
-    if lvconn.getVersion() < 7002000:
+    if libvirt.getVersion("QEMU")[1] < 7002000:
         net.update(section, command, -1, xml)
     else:
         net.update(command, section, -1, xml)
