@@ -55,7 +55,7 @@ async def describe_addresses(
     tags = []
     ips = []
     instances = []
-    alloc_ids = []
+    alloc_ids = args.get("AllocationId", [])
     assoc_ids = []
     if filters:
         assert isinstance(filters, list)
