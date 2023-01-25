@@ -253,16 +253,28 @@ class Network:
                 lambda k: not any(in_zone(k[1], zone) for zone in ez)
             )
 
-        records: DNSRecords
+        filtered_records: DNSRecords
 
         if filters:
-            records = {
+            filtered_records = {
                 k: v
                 for k, v in self._records.items()
                 if all(f(k) for f in filters)
             }
         else:
-            records = self._records
+            filtered_records = self._records
+
+        records: DNSRecords = {}
+        for (rt, name), v in filtered_records.items():
+            if rt == "TXT" and name.startswith("@@ns."):
+                rt = "NS"
+                name = name[5:]
+                # Strip quotes
+                vals = set()
+                for r in v:
+                    vals.update((item[1:-1] for item in r.split(",")))
+                v = vals
+            records[(rt, name)] = v
 
         if include_soa_ns:
             domain = self.dns_domain
@@ -438,6 +450,39 @@ class Network:
                         )
                     )
 
+            elif type == "NS":
+                deleted.append(
+                    (
+                        "txt",
+                        xmltodict.unparse(
+                            {
+                                "txt": {
+                                    "@name": f"@@ns.{name}",
+                                    "@value": ",".join(
+                                        f'"{value}"' for value in sorted(prev)
+                                    ),
+                                }
+                            }
+                        ),
+                    )
+                )
+                added.append(
+                    (
+                        "txt",
+                        xmltodict.unparse(
+                            {
+                                "txt": {
+                                    "@name": f"@@ns.{name}",
+                                    "@value": ",".join(
+                                        f'"{value}"'
+                                        for value in sorted(values)
+                                    ),
+                                }
+                            }
+                        ),
+                    )
+                )
+
             elif type == "SRV":
                 parts = name.split(".", maxsplit=3)
                 if len(parts) == 2:
@@ -534,6 +579,23 @@ class Network:
                             ),
                         )
                     )
+            elif type == "NS":
+                deleted.append(
+                    (
+                        "txt",
+                        xmltodict.unparse(
+                            {
+                                "txt": {
+                                    "@name": f"@@ns.{name}",
+                                    "@value": ",".join(
+                                        f'"{value}"'
+                                        for value in sorted(values)
+                                    ),
+                                }
+                            }
+                        ),
+                    )
+                )
             elif type in {"A", "AAAA"}:
                 mod_hosts.update(values)
             elif type == "CNAME":
