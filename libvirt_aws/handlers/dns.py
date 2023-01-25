@@ -431,7 +431,7 @@ async def list_hosted_zones_by_name(
         offset = 0
 
     sliced = zones[offset : offset + max_items]
-    is_truncated = len(zones) > max_items
+    is_truncated = len(zones[offset :]) > max_items
 
     response = {
         "HostedZones": sliced,
