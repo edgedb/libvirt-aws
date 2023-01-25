@@ -451,21 +451,23 @@ class Network:
                     )
 
             elif type == "NS":
-                deleted.append(
-                    (
-                        "txt",
-                        xmltodict.unparse(
-                            {
-                                "txt": {
-                                    "@name": f"@@ns.{name}",
-                                    "@value": ",".join(
-                                        f'"{value}"' for value in sorted(prev)
-                                    ),
+                if prev:
+                    deleted.append(
+                        (
+                            "txt",
+                            xmltodict.unparse(
+                                {
+                                    "txt": {
+                                        "@name": f"@@ns.{name}",
+                                        "@value": ",".join(
+                                            f'"{value}"'
+                                            for value in sorted(prev)
+                                        ),
+                                    }
                                 }
-                            }
-                        ),
+                            ),
+                        )
                     )
-                )
                 added.append(
                     (
                         "txt",
