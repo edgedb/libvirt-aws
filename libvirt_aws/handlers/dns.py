@@ -424,7 +424,13 @@ async def list_hosted_zones_by_name(
         )
 
     zones.sort(key=_sort_key)
-    sliced = zones[:max_items]
+    if dns_name:
+        names = [_sort_key(z) for z in zones]
+        offset = bisect.bisect_left(names, _name_key(dns_name))
+    else:
+        offset = 0
+
+    sliced = zones[offset : offset + max_items]
     is_truncated = len(zones) > max_items
 
     response = {
@@ -434,8 +440,8 @@ async def list_hosted_zones_by_name(
     }
 
     if is_truncated:
-        response["NextDNSName"] = zones[max_items]["Name"]
-        response["NextHostedZoneId"] = zones[max_items]["Id"]
+        response["NextDNSName"] = zones[offset + max_items]["Name"]
+        response["NextHostedZoneId"] = zones[offset + max_items]["Id"]
 
     if dns_name:
         response["DNSName"] = dns_name
