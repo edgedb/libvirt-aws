@@ -10,6 +10,7 @@ import collections
 import itertools
 import ipaddress
 import json
+import sqlite3
 import uuid
 
 import libvirt
@@ -18,6 +19,9 @@ from . import _routing
 from . import errors
 from .. import objects
 from .. import qemu
+
+
+PUBLIC_IP_BLOCK_SIZE = 16
 
 
 class AddressLimitExceededError(_routing.ClientError):
@@ -203,8 +207,12 @@ async def allocate_address(
     cur.close()
 
     net = objects.network_from_xml(app["libvirt_net"].XMLDesc())
-    ip_range_start, ip_range_end = net.static_ip_range
-    for int_addr in range(int(ip_range_start), int(ip_range_end)):
+    ip_range_start = int(net.static_ip_range[0])
+    ip_range_end = max(
+        ip_range_start + PUBLIC_IP_BLOCK_SIZE,
+        int(net.static_ip_range[1]),
+    )
+    for int_addr in range(ip_range_start, ip_range_end):
         address = ipaddress.IPv4Address(int_addr)
         if address not in existing:
             break
@@ -477,6 +485,303 @@ async def release_address(
     return {
         "return": "true",
     }
+
+
+@_routing.handler("AssignPrivateIpAddresses")
+async def assign_private_ip_addresses(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    lvirt_conn: libvirt.virConnect = app["libvirt"]
+
+    interface_id = args.get("NetworkInterfaceId")
+    if not interface_id:
+        raise _routing.InvalidParameterError(
+            "missing required NetworkInterfaceId"
+        )
+
+    instance_id, _, ifname = interface_id[4:].rpartition("::")
+    if not instance_id:
+        raise _routing.InvalidParameterError(
+            f"NetworkInterfaceId is expected to be in the "
+            f"eni-<instance_id>::<ifname> format', got {interface_id!r}"
+        )
+
+    count = args.get("SecondaryPrivateIpAddressCount")
+    if not count:
+        raise _routing.InvalidParameterError(
+            "missing required SecondaryPrivateIpAddressCount"
+        )
+    try:
+        addr_count = int(count)
+    except ValueError:
+        raise _routing.InvalidParameterError(
+            "SecondaryPrivateIpAddressCount must be a positive integer"
+        )
+
+    if addr_count <= 0:
+        raise _routing.InvalidParameterError(
+            "SecondaryPrivateIpAddressCount must be a positive integer"
+        )
+
+    if not interface_id.startswith("eni-"):
+        raise _routing.InvalidParameterError(
+            f"NetworkInterfaceId must start with 'eni-', got {interface_id!r}"
+        )
+
+    try:
+        vir_domain = lvirt_conn.lookupByName(instance_id)
+    except libvirt.libvirtError as e:
+        raise errors.InvalidInstanceID_NotFound(
+            f"invalid InstanceId: {e}"
+        ) from e
+
+    net = objects.network_from_xml(app["libvirt_net"].XMLDesc())
+
+    db_conn: sqlite3.Connection = app["db"]
+
+    new_addrs = []
+
+    with db_conn:
+        cur = db_conn.execute(
+            """
+                SELECT ip_address
+                FROM private_ip_addresses
+                WHERE instance_id IS NOT NULL
+            """,
+        )
+        taken_addrs = {ipaddress.ip_address(row[0]) for row in cur.fetchall()}
+
+        ip_range_start = int(net.static_ip_range[0]) + PUBLIC_IP_BLOCK_SIZE
+        ip_range_end = int(net.static_ip_range[1])
+
+        for int_addr in range(ip_range_start, ip_range_end):
+            address = ipaddress.IPv4Address(int_addr)
+            if address in taken_addrs:
+                continue
+
+            new_addrs.append(address)
+
+            db_conn.execute(
+                """
+                    INSERT INTO private_ip_addresses(
+                        ip_address,
+                        instance_id,
+                        interface
+                    )
+                    VALUES
+                        (?, ?, ?)
+                """,
+                [str(address), instance_id, ifname],
+            )
+            if len(new_addrs) == addr_count:
+                break
+
+        if len(new_addrs) < addr_count:
+            raise AddressLimitExceededError(
+                "libvirt network is out of static addresses"
+            )
+
+        assigned_addrs = []
+
+        for new_addr in new_addrs:
+            result = await qemu.agent_exec(
+                vir_domain,
+                ["ip", "addr", "add", str(new_addr), "dev", ifname],
+            )
+
+            if result.returncode != 0:
+                placeholders = ", ".join(["?"] * len(assigned_addrs))
+                db_conn.execute(
+                    f"""
+                        DELETE FROM private_ip_addresses
+                        WHERE ip_address IN ({placeholders})
+                    """,
+                    assigned_addrs,
+                )
+
+                raise _routing.InternalServerError(
+                    f"could not assign address in VM: {result.returncode}\n"
+                    f"{result.stderr.read().decode('utf-8', errors='replace')}"
+                )
+            else:
+                assigned_addrs.append(str(new_addr))
+
+    return {
+        "networkInterfaceId": interface_id,
+        "return": True,
+        "assignedPrivateIpAddressesSet": [
+            {
+                "privateIpAddress": new_addr,
+            }
+            for new_addr in assigned_addrs
+        ],
+        "assignedIpv4PrefixSet": [],
+    }
+
+
+@_routing.handler("UnassignPrivateIpAddresses")
+async def unassign_private_ip_addresses(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    lvirt_conn: libvirt.virConnect = app["libvirt"]
+
+    interface_id = args.get("NetworkInterfaceId")
+    if not interface_id:
+        raise _routing.InvalidParameterError(
+            "missing required NetworkInterfaceId"
+        )
+
+    instance_id, _, ifname = interface_id[4:].rpartition("::")
+    if not instance_id:
+        raise _routing.InvalidParameterError(
+            f"NetworkInterfaceId is expected to be in the "
+            f"eni-<instance_id>::<ifname> format', got {interface_id!r}"
+        )
+
+    try:
+        vir_domain = lvirt_conn.lookupByName(instance_id)
+    except libvirt.libvirtError as e:
+        raise errors.InvalidInstanceID_NotFound(
+            f"invalid InstanceId: {e}"
+        ) from e
+
+    addrs = args.get("PrivateIpAddress")
+    if not addrs:
+        raise _routing.InvalidParameterError(
+            "missing required PrivateIpAddress"
+        )
+
+    db_conn: sqlite3.Connection = app["db"]
+
+    with db_conn:
+        placeholders = ", ".join(["?"] * len(addrs))
+        cur = db_conn.execute(
+            f"""
+                SELECT ip_address
+                FROM private_ip_addresses
+                WHERE
+                    instance_id = ?
+                    AND interface = ?
+                    AND ip_address IN ({placeholders})
+            """,
+            [instance_id, ifname] + addrs,
+        )
+        recorded_addrs = cur.fetchall()
+        if len(recorded_addrs) != len(addrs):
+            raise _routing.InvalidParameterError(
+                f"Some of the specified addresses are not assigned to "
+                f"interface {interface_id}"
+            )
+
+        for addr in addrs:
+            result = await qemu.agent_exec(
+                vir_domain,
+                ["ip", "addr", "del", addr, "dev", ifname],
+            )
+
+            if result.returncode != 0:
+                raise _routing.InternalServerError(
+                    f"could not unassign address in VM: {result.returncode}\n"
+                    f"{result.stderr.read().decode('utf-8', errors='replace')}"
+                )
+            else:
+                db_conn.execute(
+                    f"""
+                        DELETE FROM private_ip_addresses
+                        WHERE ip_address = ?
+                    """,
+                    [addr],
+                )
+
+    return {
+        "return": True,
+    }
+
+
+async def describe_network_ifaces(
+    lvirt_conn: libvirt.virConnect,
+    domain: objects.Domain,
+) -> list[dict[str, Any]]:
+    vir_domain = lvirt_conn.lookupByName(domain.name)
+    if vir_domain.state()[0] != libvirt.VIR_DOMAIN_RUNNING:
+        return []
+
+    ifaces = []
+
+    result = await qemu.agent_exec(
+        vir_domain,
+        ["ip", "-json", "addr", "list"],
+    )
+
+    if result.returncode != 0:
+        raise _routing.InternalServerError(
+            f"could not read interfaces in VM: {result.returncode}\n"
+            f"{result.stderr.read().decode('utf-8', errors='replace')}"
+        )
+    else:
+        output = result.stdout.read()
+        try:
+            ip_output = json.loads(output)
+        except Exception as e:
+            output_str = output.decode("utf-8", errors="replace")
+            raise _routing.InternalServerError(
+                f"could not decode output of `ip addr list` in VM: \n"
+                f"{e}\nOUTPUT:\n{output_str}"
+            )
+
+        for iface in ip_output:
+            if iface.get("link_type") != "ether":
+                continue
+
+            ifname = iface["ifname"]
+            addrs = [
+                addr["local"]
+                for addr in iface["addr_info"]
+                if addr["family"] == "inet"
+            ]
+            if not addrs:
+                # No assigned addresses?  Just skip it.
+                continue
+
+            iface_id = f"{domain.name}::{ifname}"
+
+            iface_desc = {
+                "networkInterfaceId": f"eni-{iface_id}",
+                "attachment": {
+                    "attachmentId": f"eni-attach-{iface_id}",
+                    "deviceIndex": int(iface["ifindex"]) - 1,
+                    "status": "attached",
+                    "attachTime": "2023-01-08T16:46:19.000Z",
+                    "deleteOnTermination": True,
+                },
+                "subnetId": "subnet-decafbad",
+                "groupSet": [
+                    {
+                        "groupId": "sg-decafbad",
+                        "groupName": "SecurityGroup",
+                    }
+                ],
+                "vpcId": "vpc-12345678",
+                "ownerId": "000000000000",
+                "status": "in-use",
+                "macAddress": iface["address"],
+                "privateDnsName": addrs[0],
+                "privateIpAddress": addrs[0],
+                "privateIpAddressesSet": [
+                    {
+                        "privateIpAddress": addr,
+                        "privateDnsName": addr,
+                        "primary": i == 0,
+                    }
+                    for i, addr in enumerate(addrs)
+                ],
+            }
+
+            ifaces.append(iface_desc)
+
+    return ifaces
 
 
 async def _find_interface(

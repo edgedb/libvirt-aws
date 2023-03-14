@@ -61,13 +61,24 @@ def init_db(db: sqlite3.Connection) -> None:
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS ip_addresses (
-                allocation_id  text,
-                ip_address     text,
-                association_id text,
-                instance_id    text,
+                allocation_id      text,
+                ip_address         text,
+                association_id     text,
+                instance_id        text,
+                private_ip_address text,
                 UNIQUE (ip_address),
                 UNIQUE (allocation_id),
                 UNIQUE (association_id)
+            );
+        """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS private_ip_addresses (
+                ip_address     text,
+                instance_id    text,
+                interface      text,
+                UNIQUE (ip_address)
             );
         """
         )
