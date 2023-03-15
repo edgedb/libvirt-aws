@@ -702,6 +702,7 @@ async def unassign_private_ip_addresses(
 
 async def describe_network_ifaces(
     lvirt_conn: libvirt.virConnect,
+    lvirt_net: libvirt.virNetwork,
     domain: objects.Domain,
 ) -> list[dict[str, Any]]:
     vir_domain = lvirt_conn.lookupByName(domain.name)
@@ -721,6 +722,11 @@ async def describe_network_ifaces(
             f"{result.stderr.read().decode('utf-8', errors='replace')}"
         )
     else:
+        net = objects.network_from_xml(lvirt_net.XMLDesc())
+        pub_ip_net = ipaddress.IPv4Interface(
+            (int(net.static_ip_range[0]), 32 - PUBLIC_IP_BLOCK_SIZE // 8),
+        ).network
+
         output = result.stdout.read()
         try:
             ip_output = json.loads(output)
@@ -739,7 +745,10 @@ async def describe_network_ifaces(
             addrs = [
                 addr["local"]
                 for addr in iface["addr_info"]
-                if addr["family"] == "inet"
+                if (
+                    addr["family"] == "inet"
+                    and ipaddress.ip_address(addr["local"]) not in pub_ip_net
+                )
             ]
             if not addrs:
                 # No assigned addresses?  Just skip it.

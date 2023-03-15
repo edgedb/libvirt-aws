@@ -17,6 +17,7 @@ async def describe_instances(
     app: _routing.App,
 ) -> dict[str, Any]:
     pool: libvirt.virStoragePool = app["libvirt_pool"]
+    net: libvirt.virNetwork = app["libvirt_net"]
     lvirt_conn: libvirt.virConnect = app["libvirt"]
 
     instance_ids = set(args.get("InstanceId", ()))
@@ -27,7 +28,7 @@ async def describe_instances(
         if not instance_ids or domname in instance_ids:
             block_devices = await _describe_block_devices(pool, domain)
             network_ifaces = await ips.describe_network_ifaces(
-                lvirt_conn, domain
+                lvirt_conn, net, domain
             )
 
             result.append(
