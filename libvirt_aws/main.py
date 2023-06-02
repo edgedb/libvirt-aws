@@ -110,6 +110,7 @@ def init_app(
     libvirt_uri: str,
     database: str,
     region: str,
+    fs_dir: str,
 ) -> web.Application:
     app = web.Application()
     # logging.basicConfig(level=logging.DEBUG)
@@ -131,6 +132,7 @@ def init_app(
     app["db"] = sqlite3.connect(database)
     app["logger"] = logging.getLogger("libvirt-aws")
     app["region"] = region
+    app["fs_dir"] = fs_dir
     init_db(app["db"])
     app.add_routes(handlers.routes)
     app.on_cleanup.append(close_libvirt)
@@ -145,6 +147,12 @@ async def close_libvirt(app: web.Application) -> None:
 @click.option("--bind-to", default=None, type=str, help="Address to listen on")
 @click.option("--port", default=5100, type=int, help="TCP port to listen on")
 @click.option("--database", default="pool.db", help="Path to sqlite db")
+@click.option(
+    "--fs-dir",
+    required=True,
+    type=str,
+    help="directory to mount domain file systems in"
+)
 @click.option("--libvirt-uri", default="qemu:///system", help="Libvirtd URI")
 @click.option(
     "--libvirt-image-pool",
@@ -167,6 +175,7 @@ def main(
     bind_to: Optional[str],
     port: int,
     database: str,
+    fs_dir: str,
     libvirt_image_pool: str,
     libvirt_network: str,
     libvirt_uri: str,
@@ -179,6 +188,7 @@ def main(
             libvirt_uri=libvirt_uri,
             database=database,
             region=region,
+            fs_dir=fs_dir,
         ),
         access_log_class=AccessLogger,
         host=bind_to,
