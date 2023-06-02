@@ -17,6 +17,7 @@ import libvirt
 
 from . import _routing
 from . import errors
+from . import utils
 from .. import objects
 from .. import qemu
 
@@ -221,37 +222,18 @@ async def allocate_address(
             "libvirt network is out of static addresses"
         )
 
-    tags = {}
-    tag_spec = args.get("TagSpecification")
-    if tag_spec:
-        for spec_entry in tag_spec:
-            tag_entries = spec_entry["Tag"]
-            for tag in tag_entries:
-                tags[tag["Key"]] = tag["Value"]
-
-    cur = app["db"].cursor()
-
-    if tags:
-        cur.executemany(
-            """
-                INSERT INTO tags
-                    (resource_name, resource_type, tagname, tagvalue)
-                VALUES (?, ?, ?, ?)
-            """,
-            [[str(address), "ip_address", n, v] for n, v in tags.items()],
-        )
-
     allocation_id = f"eipalloc-{uuid.uuid4()}"
-    cur.execute(
-        """
-            INSERT INTO ip_addresses
-                (allocation_id, ip_address)
-            VALUES (?, ?)
-        """,
-        [allocation_id, str(address)],
-    )
-
-    app["db"].commit()
+    with app['db'] as db:
+        cur = db.cursor()
+        utils.add_tags(cur, str(address), "ip_address", args.get("TagSpecification"))
+        cur.execute(
+            """
+                INSERT INTO ip_addresses
+                    (allocation_id, ip_address)
+                VALUES (?, ?)
+            """,
+            [allocation_id, str(address)],
+        )
 
     return {
         "publicIp": str(address),

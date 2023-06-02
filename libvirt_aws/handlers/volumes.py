@@ -10,6 +10,7 @@ import libvirt
 
 from . import _routing
 from . import errors
+from . import utils
 
 from .. import objects
 
@@ -72,25 +73,8 @@ async def create_volume(
 
     create_time = datetime.datetime.now(datetime.timezone.utc)
 
-    tags = {}
-    tag_spec = args.get("TagSpecification")
-    if tag_spec:
-        for spec_entry in tag_spec:
-            tag_entries = spec_entry["Tag"]
-            for tag in tag_entries:
-                tags[tag["Key"]] = tag["Value"]
-
-    if tags:
-        cur = app["db"].cursor()
-        cur.executemany(
-            """
-                INSERT INTO tags
-                    (resource_name, resource_type, tagname, tagvalue)
-                VALUES (?, ?, ?, ?)
-            """,
-            [[volname, "volume", n, v] for n, v in tags.items()],
-        )
-        app["db"].commit()
+    with app['db'] as db:
+        utils.add_tags(db, volname, "volume", args.get('TagSpecification'))
 
     return {
         "volumeId": volname,
@@ -101,7 +85,6 @@ async def create_volume(
         "status": "creating",
         "createTime": create_time.strftime("%Y-%m-%dT%H:%M:%S.%f000Z"),
         "volumeType": voltype,
-        "tagSet": [{"key": k, "value": v} for k, v in tags.items()],
         "multiAttachEnabled": "false",
     }
 

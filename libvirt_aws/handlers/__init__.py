@@ -7,4 +7,5 @@ from . import az
 from . import dns
 from . import instances
 from . import ips
+from . import ssm
 from . import volumes

@@ -47,8 +47,7 @@ class AccessLogger(aiohttp.web_log.AccessLogger):
 
 def init_db(db: sqlite3.Connection) -> None:
     with db:
-        db.execute(
-            """
+        db.executescript("""
             CREATE TABLE IF NOT EXISTS tags (
                 resource_name text,
                 resource_type text,
@@ -56,10 +55,7 @@ def init_db(db: sqlite3.Connection) -> None:
                 tagvalue      text,
                 UNIQUE (resource_name, resource_type, tagname)
             );
-        """
-        )
-        db.execute(
-            """
+
             CREATE TABLE IF NOT EXISTS ip_addresses (
                 allocation_id      text,
                 ip_address         text,
@@ -70,38 +66,55 @@ def init_db(db: sqlite3.Connection) -> None:
                 UNIQUE (allocation_id),
                 UNIQUE (association_id)
             );
-        """
-        )
-        db.execute(
-            """
+
             CREATE TABLE IF NOT EXISTS private_ip_addresses (
                 ip_address     text,
                 instance_id    text,
                 interface      text,
                 UNIQUE (ip_address)
             );
-        """
-        )
-        db.execute(
-            """
+
             CREATE TABLE IF NOT EXISTS dns_zones (
                 id           text,
                 name         text,
                 comment      text,
                 UNIQUE (id)
             );
-        """
-        )
-        db.execute(
-            """
+
             CREATE TABLE IF NOT EXISTS dns_changes (
                 id           text,
                 submitted_at text,
                 comment      text,
                 UNIQUE (id)
             );
-        """
-        )
+
+            CREATE TABLE IF NOT EXISTS ssm_documents (
+                name    text not null,
+                content text not null,
+                UNIQUE (name)
+            );
+
+            CREATE TABLE IF NOT EXISTS ssm_command_invocations (
+                command_id    text not null,
+                instance_id   text not null,
+                response_code integer,
+                stdout        text,
+                stderr        text,
+                UNIQUE (command_id, instance_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS machine_images (
+                name    text not null,
+                UNIQUE (name)
+            );
+
+            CREATE TABLE IF NOT EXISTS ec2_instance (
+                name  text not null,
+                state text check(state IN ('running', 'terminated')) not null,
+                terminated_at timestamptz,
+                UNIQUE (name)
+            )
+        """)
 
 
 def init_app(
