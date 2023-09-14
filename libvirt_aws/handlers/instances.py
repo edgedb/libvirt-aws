@@ -60,65 +60,67 @@ async def describe_instances(
     args: _routing.HandlerArgs,
     app: _routing.App,
 ) -> dict[str, Any]:
-    pool: libvirt.virStoragePool = app["libvirt_pool"]
-    net: libvirt.virNetwork = app["libvirt_net"]
-    lvirt_conn: libvirt.virConnect = app["libvirt"]
+    with open("/tmp/debug.log", 'at') as f:
+        print('start DescribeInstances', file=f)
+        pool: libvirt.virStoragePool = app["libvirt_pool"]
+        net: libvirt.virNetwork = app["libvirt_net"]
+        lvirt_conn: libvirt.virConnect = app["libvirt"]
 
-    instance_ids = set(args.get("InstanceId", ()))
-    result = []
+        result = []
+        for instance_id in set(args.get("InstanceId", ())):
+            print('DescribeInstances', instance_id, file=f)
+            with app['db'] as db:
+                row = db.execute('''
+                    SELECT state FROM ec2_instance WHERE name = ?
+                ''', [instance_id]).fetchone()
 
-    for instance_id in instance_ids:
-        with app['db'] as db:
-            row = db.execute('''
-                SELECT state FROM ec2_instance WHERE name = ?
-            ''', [instance_id]).fetchone()
+            if row is None:
+                raise errors.InvalidInstanceID_NotFound(
+                    f'invalid InstanceId: {instance_id}')
 
-        if row is None:
-            raise errors.InvalidInstanceID_NotFound(
-                f'invalid InstanceId: {instance_id}')
+            state = row[0]
+            if state == 'terminated':
+                result.append(
+                    {
+                        "instanceId": instance_id,
+                        "instanceState": {
+                            "name": state,
+                        },
+                    }
+                )
+                continue
 
-        state = row[0]
-        if state == 'terminated':
+            try:
+                virdom = lvirt_conn.lookupByName(instance_id)
+            except libvirt.libvirtError as e:
+                raise errors.InvalidInstanceID_NotFound(
+                    f'invalid InstanceId: {instance_id}') from e
+
+            domain = objects.domain_from_xml(virdom.XMLDesc())
+            block_devices = await _describe_block_devices(pool, domain)
+            virstate, _ = virdom.state()
+            state = domain_state_lookup[virstate]
             result.append(
                 {
                     "instanceId": instance_id,
+                    "instanceType": "t2.micro",
                     "instanceState": {
                         "name": state,
                     },
+                    "blockDeviceMapping": block_devices,
+                    "networkInterfaceSet": [],
                 }
             )
-            continue
 
-        try:
-            virdom = lvirt_conn.lookupByName(instance_id)
-        except libvirt.libvirtError as e:
-            raise errors.InvalidInstanceID_NotFound(
-                f'invalid InstanceId: {instance_id}') from e
-
-        domain = objects.domain_from_xml(virdom.XMLDesc())
-        block_devices = await _describe_block_devices(pool, domain)
-        virstate, _ = virdom.state()
-        state = domain_state_lookup[virstate]
-        result.append(
-            {
-                "instanceId": instance_id,
-                "instanceType": "t2.micro",
-                "instanceState": {
-                    "name": state,
-                },
-                "blockDeviceMapping": block_devices,
-                "networkInterfaceSet": [],
-            }
-        )
-
-    return {
-        "nextToken": None,
-        "reservationSet": [
-            {
-                "instancesSet": result,
-            }
-        ]
-    }
+        print('DescribeInstances returning', instance_id, file=f)
+        return {
+            "nextToken": None,
+            "reservationSet": [
+                {
+                    "instancesSet": result,
+                }
+            ]
+        }
 
 
 async def _describe_block_devices(
