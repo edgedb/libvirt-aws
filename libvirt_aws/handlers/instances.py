@@ -266,3 +266,25 @@ async def terminate_instances(
     return {
         "instancesSet": results,
     }
+
+
+@_routing.handler("StopInstances")
+async def stop_instances(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> dict[str, Any]:
+    lvirt_conn: libvirt.virConnect = app['libvirt']
+    results = []
+    for instance_id in set(args.get("InstanceId", ())):
+        with app['db'] as db:
+            db.execute('''
+                UPDATE ec2_instance
+                SET state = 'stopped',
+                WHERE name = ? AND terminated_at IS NULL
+            ''', [instance_id])
+            lvirt_conn.lookupByName(instance_id).suspend()
+            results.append({"instanceId": instance_id})
+
+    return {
+        "instancesSet": results,
+    }

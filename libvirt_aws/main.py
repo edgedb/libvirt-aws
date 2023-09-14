@@ -110,7 +110,7 @@ def init_db(db: sqlite3.Connection) -> None:
 
             CREATE TABLE IF NOT EXISTS ec2_instance (
                 name  text not null,
-                state text check(state IN ('running', 'terminated')) not null,
+                state text check(state IN ('running', 'stopped', 'terminated')) not null,
                 terminated_at timestamptz,
                 UNIQUE (name)
             )
