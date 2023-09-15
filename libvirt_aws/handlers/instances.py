@@ -281,8 +281,10 @@ async def stop_instances(
         with app['db'] as db:
             db.execute('''
                 UPDATE ec2_instance
-                SET state = 'stopped',
-                WHERE name = ? AND terminated_at IS NULL
+                SET state = 'stopped'
+                WHERE
+                    name = ? AND
+                    terminated_at IS NULL
             ''', [instance_id])
             lvirt_conn.lookupByName(instance_id).suspend()
             results.append({"instanceId": instance_id})
