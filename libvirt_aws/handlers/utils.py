@@ -1,20 +1,11 @@
 from __future__ import annotations
-from typing import Optional, List, Protocol
+from typing import Optional, List, Protocol, Dict
 
 import sqlite3
 
 
-class DBExecutemany(Protocol):
-    def executemany(self, query: str, params: list) -> DBExecutemany:
-        """sqlite3.Cursor.executemany()"""
-
-class DBExecute(Protocol):
-    def execute(self, query: str, params: list) -> None:
-        """sqlite3.Cursor.execute()"""
-
-
 def add_tags(
-    db: DBExecutemany,
+    db,
     resource_name: str,
     resource_type: str,
     tag_specs: Optional[List[dict]]
@@ -38,7 +29,7 @@ def add_tags(
     )
 
 def remove_tags(
-    db: DBExecute,
+    db,
     resource_name: str,
     resource_type: str
 ) -> None:
@@ -51,3 +42,28 @@ def remove_tags(
         """,
         [resource_name, resource_type],
     )
+
+
+def get_tags(
+    db,
+    resource_name: str,
+    resource_type: str
+) -> List[Dict[str, str]]:
+    rows = db.execute(
+        """
+            SELECT tagname, tagvalue FROM tags
+            WHERE
+                resource_name = ? AND
+                resource_type = ?
+        """,
+        [resource_name, resource_type],
+    ).fetchall()
+
+    tags = []
+    for row in rows:
+        tags.append({
+            'key': row[0],
+            'value': row[1],
+        })
+
+    return tags

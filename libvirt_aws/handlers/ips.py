@@ -225,7 +225,7 @@ async def allocate_address(
     allocation_id = f"eipalloc-{uuid.uuid4()}"
     with app['db'] as db:
         cur = db.cursor()
-        utils.add_tags(cur, str(address), "ip_address", args.get("TagSpecification"))
+        utils.add_tags(cur, str(address), "elastic-ip", args.get("TagSpecification"))
         cur.execute(
             """
                 INSERT INTO ip_addresses

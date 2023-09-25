@@ -103,17 +103,38 @@ def init_db(db: sqlite3.Connection) -> None:
                 UNIQUE (command_id, instance_id)
             );
 
-            CREATE TABLE IF NOT EXISTS machine_images (
+            CREATE TABLE IF NOT EXISTS ec2_machine_image (
                 name    text not null,
                 UNIQUE (name)
             );
 
             CREATE TABLE IF NOT EXISTS ec2_instance (
-                name  text not null,
-                state text check(state IN ('running', 'stopped', 'terminated')) not null,
+                id text not null,
+                state text check(state IN (
+                    'pending',
+                    'running',
+                    'stopping',
+                    'stopped',
+                    'terminated'
+                )) not null,
+
+                -- needed so that the terraform provider doesn't force
+                -- replacement of the instance on every apply.
+                availability_zone text not null,
+                subnet_id text not null,
+
                 terminated_at timestamptz,
-                UNIQUE (name)
-            )
+                UNIQUE (id)
+            );
+
+            CREATE TABLE IF NOT EXISTS ec2_launch_template (
+                id text not null,
+                name text not null,
+                image_id text not null,
+                data text not null,
+                UNIQUE (name),
+                UNIQUE (id)
+            );
         """)
 
 
