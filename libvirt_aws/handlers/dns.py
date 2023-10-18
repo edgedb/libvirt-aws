@@ -763,7 +763,7 @@ async def change_resource_record_sets(
             if not isinstance(records_el, list):
                 records_el = [records_el]
             values = {rec["Value"] for rec in records_el}
-            key = (type, name)
+            key = (type, objects.fqdn(name))
 
             if change["Action"] == "CREATE":
                 if key in table:
@@ -936,6 +936,8 @@ def _get_records(
 
     return net.get_dns_records(
         zone=zone_name,
-        exclude_zones=subzone_names - {zone_name},
+        exclude_zones={
+            sz for sz in subzone_names if not objects.in_zone(zone_name, sz)
+        },
         include_soa_ns=include_soa_ns,
     )

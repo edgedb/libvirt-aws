@@ -274,6 +274,14 @@ class Network:
                 for r in v:
                     vals.update((item[1:-1] for item in r.split(",")))
                 v = vals
+            elif rt == "TXT" and name.startswith("@@cname."):
+                rt = "CNAME"
+                name = name[8:]
+                # Strip quotes
+                vals = set()
+                for r in v:
+                    vals.update((item[1:-1] for item in r.split(",")))
+                v = vals
             records[(rt, name)] = v
 
         if include_soa_ns:
@@ -429,6 +437,40 @@ class Network:
                     for address in self._resolve(target):
                         add_hosts[address].append(name)
                 mod_hosts.update(prev)
+
+                if prev:
+                    deleted.append(
+                        (
+                            "txt",
+                            xmltodict.unparse(
+                                {
+                                    "txt": {
+                                        "@name": f"@@cname.{name}",
+                                        "@value": ",".join(
+                                            f'"{value}"'
+                                            for value in sorted(prev)
+                                        ),
+                                    }
+                                }
+                            ),
+                        )
+                    )
+                added.append(
+                    (
+                        "txt",
+                        xmltodict.unparse(
+                            {
+                                "txt": {
+                                    "@name": f"@@cname.{name}",
+                                    "@value": ",".join(
+                                        f'"{value}"'
+                                        for value in sorted(values)
+                                    ),
+                                }
+                            }
+                        ),
+                    )
+                )
 
             elif type == "TXT":
                 for value in prev:
@@ -606,6 +648,22 @@ class Network:
                 # try to resolve the target and add it as A instead.
                 for target in values:
                     mod_hosts.update(self._resolve(target))
+                deleted.append(
+                    (
+                        "txt",
+                        xmltodict.unparse(
+                            {
+                                "txt": {
+                                    "@name": f"@@cname.{name}",
+                                    "@value": ",".join(
+                                        f'"{value}"'
+                                        for value in sorted(values)
+                                    ),
+                                }
+                            }
+                        ),
+                    )
+                )
             else:
                 raise ValueError(f"unsupported resource record type: {type}")
 
