@@ -9,6 +9,7 @@ dependencies = [
     "dicttoxml~=1.7.16",
     "libvirt-python>=6.0.0",
     "xmltodict~=0.13.0",
+    "pyyaml>=6.0.0",
 ]
 
 [project.optional-dependencies]

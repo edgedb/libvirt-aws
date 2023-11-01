@@ -162,6 +162,7 @@ class _HandlerData(NamedTuple):
     list_format: Literal["condensed", "expanded"]
     error_formatter: Callable[[ServiceError], str]
     include_request_id: bool
+    protocol: str
 
 
 _handlers: Dict[Tuple[str, str], _HandlerData] = {}
@@ -176,6 +177,7 @@ def handler(
     xmlns: Optional[str] = None,
     list_format: Literal["condensed", "expanded"] = "expanded",
     error_formatter: Callable[[ServiceError], str] = format_ec2_error_xml,
+    protocol: str = "ec2",
 ) -> Callable[[_HandlerType], _HandlerType]:
     if isinstance(methods, str):
         methods = (methods,)
@@ -191,6 +193,7 @@ def handler(
                     list_format=list_format,
                     error_formatter=error_formatter,
                     include_request_id=True,
+                    protocol=protocol,
                 )
                 if (method, path) not in _path_handlers:
                     routes.route(method, path)(handle_request)
@@ -211,6 +214,7 @@ def direct_handler(
     xmlns: Optional[str] = None,
     list_format: Literal["condensed", "expanded"] = "expanded",
     error_formatter: Callable[[ServiceError], str] = format_ec2_error_xml,
+    protocol: str = "ec2",
 ) -> Callable[[_HandlerType], _HandlerType]:
 
     if isinstance(methods, str):
@@ -227,6 +231,7 @@ def direct_handler(
                     list_format=list_format,
                     error_formatter=error_formatter,
                     include_request_id=False,
+                    protocol=protocol,
                 )
                 if (method, path) not in _path_handlers:
                     routes.route(method, path)(
@@ -296,62 +301,24 @@ async def handle_request(
     *,
     action: Optional[str] = None,
 ) -> web.StreamResponse:
-    data: Args
-
-    if request.method == "POST":
-        data = await request.post()
-        body = await request.text()
-    elif request.method in {"GET", "DELETE"}:
-        data = request.query
-        body = ""
-    else:
-        raise InvalidMethodError(
-            f"Method Not Allowed: {request.method}",
-            method=request.method,
-            allowed_methods=["GET", "POST"],
-        )
+    if action is None:
+        action = request.headers.get("X-Amz-Target", None)
 
     if action is None:
-        action_arg = data.get("Action")
+        action_arg = (await request.post()).get("Action")
         if not isinstance(action_arg, str):
             raise InvalidActionError(f"Invalid Action: {action_arg!r}")
         action = action_arg
 
     handler_data = _handlers.get((action, request.method))
-
     if handler_data is None:
         raise InvalidActionError(
             f"The action {action} is not valid for this web service."
         )
 
-    args = dict(request.match_info)
-    args["BodyText"] = body
-    args.update(parse_args(data))
-
-    xmlns = handler_data.xmlns
-
-    if xmlns is None:
-        version = args.get("Version")
-        if version is not None:
-            xmlns = f"http://ec2.amazonaws.com/doc/{version}/"
-
     try:
-        result = await handler_data.handler(args, request.app)
-
-        if handler_data.include_request_id:
-            result["RequestID"] = str(uuid.uuid4())
-
-        text = format_xml_response(
-            result,
-            root=f"{action}Response",
-            xmlns=xmlns,
-            list_format=handler_data.list_format,
-        )
-        dom = minidom.parseString(text)
-        aiohttp.log.access_logger.debug(
-            f"Response:\n---------\n{dom.toprettyxml()}"
-        )
-        return web.Response(text=text, content_type="text/xml")
+        fn = _protocol_handers[handler_data.protocol]
+        return await fn(request, action, handler_data)
     except ServiceError as e:
         e.text = handler_data.error_formatter(e)
         dom = minidom.parseString(e.text)
@@ -367,3 +334,69 @@ async def handle_request(
             f"Error Response:\n\n{dom.toprettyxml()}"
         )
         raise exc from None
+
+
+async def handle_ec2_request(
+    request: web.Request,
+    action: str,
+    handler_data: _HandlerData,
+) -> web.StreamResponse:
+    data: Args
+
+    if request.method == "POST":
+        data = await request.post()
+        body = await request.text()
+    elif request.method in {"GET", "DELETE"}:
+        data = request.query
+        body = ""
+    else:
+        raise InvalidMethodError(
+            f"Method Not Allowed: {request.method}",
+            method=request.method,
+            allowed_methods=["GET", "POST"],
+        )
+
+    args = dict(request.match_info)
+    args["BodyText"] = body
+    args.update(parse_args(data))
+
+    xmlns = handler_data.xmlns
+
+    if xmlns is None:
+        version = args.get("Version")
+        if version is not None:
+            xmlns = f"http://ec2.amazonaws.com/doc/{version}/"
+
+    result = await handler_data.handler(args, request.app)
+
+    if handler_data.include_request_id:
+        result["RequestID"] = str(uuid.uuid4())
+
+    text = format_xml_response(
+        result,
+        root=f"{action}Response",
+        xmlns=xmlns,
+        list_format=handler_data.list_format,
+    )
+    dom = minidom.parseString(text)
+    aiohttp.log.access_logger.debug(
+        f"Response:\n---------\n{dom.toprettyxml()}"
+    )
+    return web.Response(text=text, content_type="text/xml")
+
+
+async def handle_json_request(
+    request: web.Request,
+    action: str,
+    handler_data: _HandlerData,
+    ) -> web.StreamResponse:
+    assert request.headers.getone("Content-Type") == "application/x-amz-json-1.1"
+    args = await request.json()
+    result = await handler_data.handler(args, request.app)
+    return web.json_response(result, content_type="application/x-amz-json-1.1")
+
+
+_protocol_handers = {
+    "ec2": handle_ec2_request,
+    "json": handle_json_request,
+}

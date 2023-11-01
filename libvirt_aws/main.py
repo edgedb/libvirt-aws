@@ -47,8 +47,7 @@ class AccessLogger(aiohttp.web_log.AccessLogger):
 
 def init_db(db: sqlite3.Connection) -> None:
     with db:
-        db.execute(
-            """
+        db.executescript("""
             CREATE TABLE IF NOT EXISTS tags (
                 resource_name text,
                 resource_type text,
@@ -56,10 +55,7 @@ def init_db(db: sqlite3.Connection) -> None:
                 tagvalue      text,
                 UNIQUE (resource_name, resource_type, tagname)
             );
-        """
-        )
-        db.execute(
-            """
+
             CREATE TABLE IF NOT EXISTS ip_addresses (
                 allocation_id      text,
                 ip_address         text,
@@ -70,38 +66,76 @@ def init_db(db: sqlite3.Connection) -> None:
                 UNIQUE (allocation_id),
                 UNIQUE (association_id)
             );
-        """
-        )
-        db.execute(
-            """
+
             CREATE TABLE IF NOT EXISTS private_ip_addresses (
                 ip_address     text,
                 instance_id    text,
                 interface      text,
                 UNIQUE (ip_address)
             );
-        """
-        )
-        db.execute(
-            """
+
             CREATE TABLE IF NOT EXISTS dns_zones (
                 id           text,
                 name         text,
                 comment      text,
                 UNIQUE (id)
             );
-        """
-        )
-        db.execute(
-            """
+
             CREATE TABLE IF NOT EXISTS dns_changes (
                 id           text,
                 submitted_at text,
                 comment      text,
                 UNIQUE (id)
             );
-        """
-        )
+
+            CREATE TABLE IF NOT EXISTS ssm_documents (
+                name    text not null,
+                content text not null,
+                UNIQUE (name)
+            );
+
+            CREATE TABLE IF NOT EXISTS ssm_command_invocations (
+                command_id    text not null,
+                instance_id   text not null,
+                response_code integer,
+                stdout        text,
+                stderr        text,
+                UNIQUE (command_id, instance_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS ec2_machine_image (
+                name    text not null,
+                UNIQUE (name)
+            );
+
+            CREATE TABLE IF NOT EXISTS ec2_instance (
+                id text not null,
+                state text check(state IN (
+                    'pending',
+                    'running',
+                    'stopping',
+                    'stopped',
+                    'terminated'
+                )) not null,
+
+                -- needed so that the terraform provider doesn't force
+                -- replacement of the instance on every apply.
+                availability_zone text not null,
+                subnet_id text not null,
+
+                terminated_at timestamptz,
+                UNIQUE (id)
+            );
+
+            CREATE TABLE IF NOT EXISTS ec2_launch_template (
+                id text not null,
+                name text not null,
+                image_id text not null,
+                data text not null,
+                UNIQUE (name),
+                UNIQUE (id)
+            );
+        """)
 
 
 def init_app(
@@ -110,6 +144,7 @@ def init_app(
     libvirt_uri: str,
     database: str,
     region: str,
+    fs_dir: str,
 ) -> web.Application:
     app = web.Application()
     # logging.basicConfig(level=logging.DEBUG)
@@ -131,6 +166,7 @@ def init_app(
     app["db"] = sqlite3.connect(database)
     app["logger"] = logging.getLogger("libvirt-aws")
     app["region"] = region
+    app["fs_dir"] = fs_dir
     init_db(app["db"])
     app.add_routes(handlers.routes)
     app.on_cleanup.append(close_libvirt)
@@ -145,6 +181,12 @@ async def close_libvirt(app: web.Application) -> None:
 @click.option("--bind-to", default=None, type=str, help="Address to listen on")
 @click.option("--port", default=5100, type=int, help="TCP port to listen on")
 @click.option("--database", default="pool.db", help="Path to sqlite db")
+@click.option(
+    "--fs-dir",
+    required=True,
+    type=str,
+    help="directory to mount domain file systems in"
+)
 @click.option("--libvirt-uri", default="qemu:///system", help="Libvirtd URI")
 @click.option(
     "--libvirt-image-pool",
@@ -167,6 +209,7 @@ def main(
     bind_to: Optional[str],
     port: int,
     database: str,
+    fs_dir: str,
     libvirt_image_pool: str,
     libvirt_network: str,
     libvirt_uri: str,
@@ -179,6 +222,7 @@ def main(
             libvirt_uri=libvirt_uri,
             database=database,
             region=region,
+            fs_dir=fs_dir,
         ),
         access_log_class=AccessLogger,
         host=bind_to,
