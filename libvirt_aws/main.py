@@ -102,6 +102,15 @@ def init_db(db: sqlite3.Connection) -> None:
             );
         """
         )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS volume_modifications (
+                id            text,
+                modifications text,
+                UNIQUE (id)
+            );
+        """
+        )
 
 
 def init_app(

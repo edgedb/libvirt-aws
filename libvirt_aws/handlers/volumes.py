@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
+import os.path
+import sqlite3
 import textwrap
 from typing import Any, Dict, Tuple
 import uuid
@@ -345,6 +348,117 @@ async def detach_volume(
         "instanceId": instance_id,
         "status": "detaching",
         "device": f"/dev/{device}",
+    }
+
+
+@_routing.handler("ModifyVolume")
+async def modify_volume(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    lvirt_conn: libvirt.virConnect = app["libvirt"]
+    pool: libvirt.virStoragePool = app["libvirt_pool"]
+    volume_id = args.get("VolumeId")
+    if not volume_id:
+        raise _routing.InvalidParameterError("missing required VolumeId")
+    if not isinstance(volume_id, str):
+        raise _routing.InvalidParameterError("invalid VolumeId value")
+
+    vol = objects.get_volume(pool, volume_id)
+
+    start_time = datetime.datetime.now(datetime.timezone.utc)
+    result = {
+        "volumeId": volume_id,
+        "modificationState": "modifying",
+        "startTime": start_time.strftime("%Y-%m-%dT%H:%M:%S.%f000Z"),
+    }
+
+    size = args.get("Size")
+    if size:
+        try:
+            size_gb = int(size)
+        except ValueError:
+            raise _routing.InvalidParameterError(
+                "invalid Size value") from None
+
+        vol_info = _describe_volume(pool, vol)
+
+        result["originalSize"] = vol_info["size"]
+        result["targetSize"] = size_gb
+
+        if vol_info["status"] == "in-use":
+            for att in vol_info["attachmentSet"]:
+                if att["status"] == "attached":
+                    domain = lvirt_conn.lookupByName(att["instanceId"])
+                    try:
+                        domain.blockResize(
+                            os.path.basename(att["device"]),
+                            size_gb * 2 ** 30,
+                            libvirt.VIR_DOMAIN_BLOCK_RESIZE_BYTES,
+                        )
+                    except libvirt.libvirtError as e:
+                        result["modificationState"] = "failed"
+                        result["statusMessage"] = str(e)
+                        app["logger"].exception(
+                            "could not resize attached volume")
+
+        else:
+            try:
+                virvol = pool.storageVolLookupByName(volume_id)
+            except libvirt.libvirtError as e:
+                raise InvalidVolumeNotFound(f"invalid VolumeId: {e}") from e
+            try:
+                virvol.resize(size_gb * 2 ** 30)
+            except libvirt.libvirtError as e:
+                result["modificationState"] = "failed"
+                result["statusMessage"] = str(e)
+                app["logger"].exception(
+                    "could not resize detached volume")
+
+    end_time = datetime.datetime.now(datetime.timezone.utc)
+    result["endTime"] = end_time.strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
+    result["modificationState"] = "completed"
+    result["progress"] = 100
+
+    with app["db"]:
+        app["db"].execute(
+            """
+            INSERT INTO volume_modifications(id, modifications)
+            VALUES (?, ?)
+            ON CONFLICT (id)
+            DO UPDATE SET modifications = EXCLUDED.modifications
+            """,
+            (volume_id, json.dumps(result)),
+        )
+
+    return {
+        "volumeModification": result,
+    }
+
+
+@_routing.handler("DescribeVolumesModifications")
+async def describe_volumes_modifications(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    volume_ids = args.get("VolumeId")
+
+    db_conn: sqlite3.Connection = app["db"]
+    with db_conn:
+        placeholders = ", ".join(["?"] * len(volume_ids))
+        cur = db_conn.execute(
+            f"""
+            SELECT modifications
+            FROM volume_modifications
+            WHERE id IN ({placeholders})
+            """,
+            volume_ids,
+        )
+
+        result = [json.loads(row[0]) for row in cur.fetchall()]
+
+    return {
+        "volumeModificationSet": result,
     }
 
 
