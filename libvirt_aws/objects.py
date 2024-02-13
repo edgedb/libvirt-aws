@@ -5,6 +5,7 @@ from typing import (
     Dict,
     List,
     Mapping,
+    MutableMapping,
     Optional,
     Set,
     Tuple,
@@ -13,7 +14,6 @@ from typing import (
 import collections
 import functools
 import ipaddress
-import socket
 import types
 
 import libvirt
@@ -191,7 +191,7 @@ def network_from_xml(xml: str) -> Network:
     return Network(xml)
 
 
-DNSRecords = Mapping[Tuple[str, str], Set[str]]
+DNSRecords = MutableMapping[Tuple[str, str], Set[str]]
 
 
 class Network:
@@ -238,6 +238,7 @@ class Network:
         zone: str = "",
         exclude_zones: Optional[Set[str]] = None,
         include_soa_ns: bool = False,
+        include_eager_cname: bool = False,
     ) -> DNSRecords:
         if self._records is None:
             self._records = self._extract_records()
@@ -270,7 +271,7 @@ class Network:
                 rt = "NS"
                 name = name[5:]
                 # Strip quotes
-                vals = set()
+                vals: Set[str] = set()
                 for r in v:
                     vals.update((item[1:-1] for item in r.split(",")))
                 v = vals
@@ -283,6 +284,14 @@ class Network:
                     vals.update((item[1:-1] for item in r.split(",")))
                 v = vals
             records[(rt, name)] = v
+
+        if not include_eager_cname:
+            cnames = [name for rt, name in records if rt == "CNAME"]
+            for cname in cnames:
+                # If a record is a CNAME there would be a corresponding
+                # A record for it, because we eagerly resolve it at
+                # creation time.  Make sure such records are elided.
+                records.pop(("A", cname), None)
 
         if include_soa_ns:
             domain = self.dns_domain
@@ -305,7 +314,7 @@ class Network:
                 soa_ns.update(records)
                 records = soa_ns
 
-        return types.MappingProxyType(records)
+        return records
 
     @property
     def dns_records(self) -> DNSRecords:
@@ -401,15 +410,24 @@ class Network:
                 {"@ip": k, "hostname": v} for k, v in hosts.values()
             ]
 
-    def _resolve(self, target: str) -> List[str]:
-        res = socket.getaddrinfo(target, 80, proto=socket.IPPROTO_TCP)
-        return [r[4][0] for r in res]
+    def _resolve_cname(self, target: str, records: DNSRecords) -> set[str]:
+        fq_target = fqdn(target)
+        addrs = records.get(("A", fq_target))
+        if addrs:
+            return addrs
+        cnames = records.get(("CNAME", fq_target))
+        if cnames:
+            assert len(cnames) == 1, "only one value in CNAME record expected"
+            return self._resolve_cname(next(iter(cnames)), records)
+
+        return set()
 
     def get_dns_diff(
         self,
         records: DNSRecords,
     ) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
-        current = self.dns_records
+        current = self.get_dns_records()
+        current_all = self.get_dns_records(include_eager_cname=True)
 
         add_hosts: Dict[str, List[str]] = collections.defaultdict(list)
         mod_hosts: Set[str] = set()
@@ -421,6 +439,8 @@ class Network:
             (type, fqdn(name)): values
             for (type, name), values in records.items()
         }
+
+        new_and_current = collections.ChainMap(norm_records, current_all)
 
         for (type, name), values in norm_records.items():
             prev = current.get((type, name), set())
@@ -434,9 +454,12 @@ class Network:
                 # CNAME records, so we have to do the next best thing:
                 # try to resolve the target and add it as A instead.
                 for target in values:
-                    for address in self._resolve(target):
+                    addrs = self._resolve_cname(target, new_and_current)
+                    for address in addrs:
                         add_hosts[address].append(name)
-                mod_hosts.update(prev)
+
+                for target in prev:
+                    mod_hosts.update(self._resolve_cname(target, current_all))
 
                 if prev:
                     deleted.append(
@@ -463,7 +486,7 @@ class Network:
                                 "txt": {
                                     "@name": f"@@cname.{name}",
                                     "@value": ",".join(
-                                        f'"{value}"'
+                                        f'"{fqdn(value)}"'
                                         for value in sorted(values)
                                     ),
                                 }
@@ -518,7 +541,7 @@ class Network:
                                 "txt": {
                                     "@name": f"@@ns.{name}",
                                     "@value": ",".join(
-                                        f'"{value}"'
+                                        f'"{fqdn(value)}"'
                                         for value in sorted(values)
                                     ),
                                 }
@@ -647,7 +670,7 @@ class Network:
                 # CNAME records, so we have to do the next best thing:
                 # try to resolve the target and add it as A instead.
                 for target in values:
-                    mod_hosts.update(self._resolve(target))
+                    mod_hosts.update(self._resolve_cname(target, current_all))
                 deleted.append(
                     (
                         "txt",

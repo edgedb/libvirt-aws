@@ -335,7 +335,7 @@ async def list_hosted_zones(
     ]
 
     for zone in subzones:
-        config = {
+        config: Dict[str, Any] = {
             "PrivateZone": False,
         }
         if zone[2]:
@@ -409,7 +409,7 @@ async def list_hosted_zones_by_name(
     ]
 
     for zone in subzones:
-        config = {
+        config: Dict[str, Any] = {
             "PrivateZone": False,
         }
         if zone[2]:
@@ -764,6 +764,8 @@ async def change_resource_record_sets(
                 records_el = [records_el]
             values = {rec["Value"] for rec in records_el}
             key = (type, objects.fqdn(name))
+            if type in {"CNAME", "NS"}:
+                values = {objects.fqdn(v) for v in values}
 
             if change["Action"] == "CREATE":
                 if key in table:
