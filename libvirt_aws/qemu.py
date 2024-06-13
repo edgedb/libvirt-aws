@@ -5,6 +5,7 @@ from typing import (
     Mapping,
     List,
     Optional,
+    Union,
 )
 
 import asyncio
@@ -91,6 +92,69 @@ async def agent_exec(
                 await asyncio.sleep(0.1)
 
     return await asyncio.wait_for(_loop(), timeout=timeout_sec)
+
+
+class RemoteFile:
+    def __init__(self, domain: libvirt.virDomain, handle: int) -> None:
+        self.domain = domain
+        self.handle = handle
+
+
+async def open_remote(
+    domain: libvirt.virDomain,
+    path: str,
+    mode: str,
+) -> RemoteFile:
+    command = {
+        "execute": "guest-file-open",
+        "arguments": {
+            "path": path,
+            "mode": mode,
+        },
+    }
+    handle = await agent_command(domain, command)
+    return RemoteFile(domain, handle)
+
+
+async def write_remote(
+    handle: RemoteFile,
+    buf: Union[bytes, bytearray, memoryview],
+) -> int:
+    command = {
+        "execute": "guest-file-write",
+        "arguments": {
+            "handle": handle.handle,
+            "buf-b64": base64.b64encode(buf).decode("ascii"),
+            "count": len(buf),
+        },
+    }
+    result = await agent_command(handle.domain, command)
+    return result["count"]
+
+
+async def close_remote(handle: RemoteFile) -> None:
+    command = {
+        "execute": "guest-file-close",
+        "arguments": {
+            "handle": handle.handle,
+        },
+    }
+
+    await agent_command(handle.domain, command)
+
+
+async def write_remote_text(
+    domain: libvirt.virDomain,
+    path: str,
+    content: str,
+) -> int:
+    file = await open_remote(domain, path, "w")
+    try:
+        result = await write_remote(file, content.encode("utf-8"))
+    finally:
+        await close_remote(file)
+
+    return result
 
 
 async def agent_command(
