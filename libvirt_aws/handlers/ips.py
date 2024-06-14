@@ -10,7 +10,10 @@ import collections
 import itertools
 import ipaddress
 import json
+import os.path
+import pathlib
 import sqlite3
+import textwrap
 import uuid
 
 import libvirt
@@ -316,23 +319,19 @@ async def associate_address(
                 exc_info=True,
             )
         else:
-            iface = await _find_interface(cur_virdom, net.ip_network)
-            await qemu.agent_exec(
-                cur_virdom,
-                ["ip", "addr", "del", ip_address, "dev", iface],
-            )
+            try:
+                await _disassociate_address(cur_virdom, net, ip_address)
+            except Exception as e:
+                raise _routing.InternalServerError(
+                    f"could not disassociate address from instance: {e}"
+                ) from e
 
-    iface = await _find_interface(new_virdom, net.ip_network)
-    result = await qemu.agent_exec(
-        new_virdom,
-        ["ip", "addr", "add", ip_address, "dev", iface],
-    )
-
-    if result.returncode != 0:
+    try:
+        await _associate_address(new_virdom, net, ip_address)
+    except Exception as e:
         raise _routing.InternalServerError(
-            f"could not assign address in VM: {result.returncode}\n"
-            f"{result.stderr.read().decode('utf-8', errors='replace')}"
-        )
+            f"could not associate address with instance: {e}"
+        ) from e
 
     with db_conn:
         db_conn.execute(
@@ -352,6 +351,101 @@ async def associate_address(
         "return": "true",
         "associationId": assoc_id,
     }
+
+
+async def _associate_address(
+    virdom: libvirt.virDomain,
+    net: objects.Network,
+    ip_address: str,
+) -> None:
+    iface = await _find_interface(virdom, net.ip_network)
+
+    net_cfg = await _get_iface_ip_config_path(virdom, iface, ip_address)
+    content = textwrap.dedent(
+        f"""\
+        [Match]
+        Name={iface}
+
+        [Network]
+        Address={ip_address}/32
+        """
+    )
+
+    result = await qemu.agent_exec(
+        virdom, ["mkdir", "-p", os.path.dirname(net_cfg)])
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"could not create network dropin: {result.returncode}:\n"
+            f"{result.stderr.read().decode('utf-8')}"
+        )
+
+    await qemu.write_remote_text(virdom, net_cfg, content)
+
+    result = await qemu.agent_exec(virdom, ["networkctl", "reload"])
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`networkctl reload` failed with exit code {result.returncode}:\n"
+            f"{result.stderr.read().decode('utf-8')}"
+        )
+
+
+async def _disassociate_address(
+    virdom: libvirt.virDomain,
+    net: objects.Network,
+    ip_address: str,
+) -> None:
+    iface = await _find_interface(virdom, net.ip_network)
+    net_cfg = await _get_iface_ip_config_path(virdom, iface, ip_address)
+    await qemu.agent_exec(virdom, ["rm", "-f", net_cfg])
+    result = await qemu.agent_exec(
+        virdom,
+        ["networkctl", "reload"],
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`networkctl reload` failed with exit code {result.returncode}:\n"
+            f"{result.stderr.read().decode('utf-8')}"
+        )
+
+
+async def _get_iface_ip_config_path(
+    virdom: libvirt.virDomain,
+    iface: str,
+    ip_addr: str,
+) -> str:
+    result = await qemu.agent_exec(
+        virdom,
+        ["networkctl", "--json=short", "status", iface],
+    )
+    if result.returncode != 0:
+        raise _routing.InternalServerError(
+            f"could not assign address in VM: `networkctl status {iface}` "
+            f"returned {result.returncode}\n"
+            f"{result.stderr.read().decode('utf-8', errors='replace')}"
+        )
+
+    stdout = result.stdout.read()
+
+    try:
+        iface_data = json.loads(stdout)
+    except Exception as e:
+        raise _routing.InternalServerError(
+            f"could not assign address in VM: `networkctl status {iface}` "
+            f"returned invalid JSON value: {e}\n{stdout}"
+        ) from e
+
+    netfile = iface_data.get("NetworkFile")
+    if not netfile:
+        raise _routing.InternalServerError(
+            f"could not assign address in VM: `networkctl status {iface}` "
+            f'response did not contain the "NetworkFile" key'
+        )
+
+    netfile_path = pathlib.Path(netfile)
+    dropin_path = f"/etc/systemd/network/{netfile_path.stem}.network.d"
+    dropin_name = f"99-libvirt-aws-{iface}-elastic-{ip_addr.replace('.', '-')}"
+    return f"{dropin_path}/{dropin_name}.conf"
 
 
 @_routing.handler("DisassociateAddress")
