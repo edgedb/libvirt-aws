@@ -183,6 +183,17 @@ async def describe_addresses(
     }
 
 
+@_routing.handler("DescribeAddressesAttribute")
+async def describe_addresses_attribute(
+    args: _routing.HandlerArgs,
+    app: _routing.App,
+) -> Dict[str, Any]:
+    # STUB
+    return {
+        "addressesSet": [],
+    }
+
+
 @_routing.handler("AllocateAddress")
 async def allocate_address(
     args: _routing.HandlerArgs,
@@ -372,7 +383,8 @@ async def _associate_address(
     )
 
     result = await qemu.agent_exec(
-        virdom, ["mkdir", "-p", os.path.dirname(net_cfg)])
+        virdom, ["mkdir", "-p", os.path.dirname(net_cfg)]
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"could not create network dropin: {result.returncode}:\n"
