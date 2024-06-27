@@ -721,7 +721,7 @@ async def list_resource_record_sets(
 
 @route53_handler(
     "ChangeResourceRecordSets",
-    path="/2013-04-01/hostedzone/{Id}/rrset/",
+    path="/2013-04-01/hostedzone/{Id}/rrset",
     methods="POST",
 )
 async def change_resource_record_sets(
