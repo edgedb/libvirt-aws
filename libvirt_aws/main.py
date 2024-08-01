@@ -6,7 +6,9 @@ import click
 import libvirt
 import logging
 import sqlite3
+import time
 from typing import Any, Mapping, Optional
+import uuid
 
 from . import handlers
 
@@ -114,8 +116,8 @@ def init_db(db: sqlite3.Connection) -> None:
 
 
 def init_app(
-    pool: str,
-    network: str,
+    pool_name_or_id: str,
+    network_name_or_id: str,
     libvirt_uri: str,
     database: str,
     region: str,
@@ -132,17 +134,9 @@ def init_app(
     aiohttp.log.access_logger.setLevel(logging.DEBUG)
     app["libvirt"] = libvirt.open(libvirt_uri)
 
-    try:
-        app["libvirt_pool"] = app["libvirt"].storagePoolLookupByName(pool)
-    except libvirt.libvirtError:
-        app["libvirt_pool"] = app["libvirt"].storagePoolLookupByUUIDString(
-            pool
-        )
-
-    try:
-        app["libvirt_net"] = app["libvirt"].networkLookupByName(network)
-    except libvirt.libvirtError:
-        app["libvirt_net"] = app["libvirt"].networkLookupByUUIDString(network)
+    app["libvirt_pool"], app["libvirt_net"] = initialize_libvirt(
+        app["libvirt"], pool_name_or_id, network_name_or_id
+    )
 
     app["db"] = sqlite3.connect(database)
     app["logger"] = logging.getLogger("libvirt-aws")
@@ -151,6 +145,50 @@ def init_app(
     app.add_routes(handlers.routes)
     app.on_cleanup.append(close_libvirt)
     return app
+
+
+def initialize_libvirt(
+    libvirt: libvirt.virConnect,
+    pool_name_or_id: str,
+    network_name_or_id: str,
+) -> tuple[libvirt.virStoragePool, libvirt.virNetwork]:
+    while True:
+        try:
+            pool, network = _initialize_libvirt(
+                libvirt, pool_name_or_id, network_name_or_id
+            )
+        except Exception:
+            logging.warning("error initializing libvirt, retrying...")
+            time.sleep(5)
+        else:
+            return pool, network
+
+
+def _initialize_libvirt(
+    libvirt: libvirt.virConnect,
+    pool_name_or_id: str,
+    network_name_or_id: str,
+) -> tuple[libvirt.virStoragePool, libvirt.virNetwork]:
+    if is_uuid(pool_name_or_id):
+        pool = libvirt.storagePoolLookupByUUIDString(pool_name_or_id)
+    else:
+        pool = libvirt.storagePoolLookupByName(pool_name_or_id)
+
+    if is_uuid(network_name_or_id):
+        network = libvirt.networkLookupByUUIDString(network_name_or_id)
+    else:
+        network = libvirt.networkLookupByName(network_name_or_id)
+
+    return pool, network
+
+
+def is_uuid(name_or_id: str) -> bool:
+    try:
+        uuid.UUID(hex=name_or_id)
+    except Exception:
+        return False
+    else:
+        return True
 
 
 async def close_libvirt(app: web.Application) -> None:
@@ -165,12 +203,12 @@ async def close_libvirt(app: web.Application) -> None:
 @click.option(
     "--libvirt-image-pool",
     default="default",
-    help="Name of libvirt image pool to use for EBS emulation.",
+    help="Name or UUID of libvirt image pool to use for EBS emulation.",
 )
 @click.option(
     "--libvirt-network",
     default="default",
-    help="Name of libvirt network to use for EIP emulation.",
+    help="Name or UUID of libvirt network to use for EIP emulation.",
 )
 @click.option(
     "--region",
@@ -190,8 +228,8 @@ def main(
 ) -> None:
     web.run_app(
         init_app(
-            pool=libvirt_image_pool,
-            network=libvirt_network,
+            pool_name_or_id=libvirt_image_pool,
+            network_name_or_id=libvirt_network,
             libvirt_uri=libvirt_uri,
             database=database,
             region=region,
